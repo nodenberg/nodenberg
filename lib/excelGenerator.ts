@@ -1,51 +1,30 @@
-import ExcelJS from 'exceljs';
-import { ExcelTemplateManager } from './excelTemplateManager';
 import { PlaceholderReplacer, PlaceholderData } from './placeholderReplacer';
 
 export class ExcelGenerator {
-  private templateManager: ExcelTemplateManager;
   private placeholderReplacer: PlaceholderReplacer;
 
   constructor() {
-    this.templateManager = new ExcelTemplateManager();
     this.placeholderReplacer = new PlaceholderReplacer();
   }
 
   /**
-   * エクセル帳票を生成（出力パターン1）
-   * プレースホルダーを置換したエクセルファイルを生成
+   * エクセル帳票を生成（test9方式）
+   * sharedStrings.xmlを直接編集することで印刷設定を完全保持
    */
   async generateExcel(
     templateBase64: string,
     data: PlaceholderData
   ): Promise<Buffer> {
-    // テンプレートを読み込む
-    const workbook = await this.templateManager.loadWorkbookFromBase64(templateBase64);
+    // Base64をBufferに変換
+    const templateBuffer = Buffer.from(templateBase64, 'base64');
 
-    // シート情報と印刷設定を読み取る（ログ出力用）
-    const workbookInfo = this.templateManager.getWorkbookInfo(workbook);
-    console.log('Workbook Info:', workbookInfo);
-
-    workbook.eachSheet((worksheet) => {
-      const printSettings = this.templateManager.getPrintSettings(worksheet);
-      console.log(`Print Settings for ${worksheet.name}:`, printSettings);
-    });
-
-    // 印刷設定を保持
-    const printSettingsMap = this.capturePrintSettings(workbook);
-
-    // プレースホルダーを置換
-    const processedWorkbook = await this.placeholderReplacer.replacePlaceholders(
-      workbook,
+    // プレースホルダーを置換（印刷設定は完全保持される）
+    const resultBuffer = await this.placeholderReplacer.replacePlaceholders(
+      templateBuffer,
       data
     );
 
-    // 印刷設定を再適用
-    this.restorePrintSettings(processedWorkbook, printSettingsMap);
-
-    // Bufferとして出力
-    const buffer = await processedWorkbook.xlsx.writeBuffer();
-    return Buffer.from(buffer);
+    return resultBuffer;
   }
 
   /**
@@ -63,47 +42,60 @@ export class ExcelGenerator {
    * テンプレート内のプレースホルダーを検出
    */
   async findPlaceholders(templateBase64: string): Promise<string[]> {
-    const workbook = await this.templateManager.loadWorkbookFromBase64(templateBase64);
-    return this.placeholderReplacer.findPlaceholders(workbook);
+    const templateBuffer = Buffer.from(templateBase64, 'base64');
+    return this.placeholderReplacer.findPlaceholders(templateBuffer);
   }
 
   /**
    * テンプレート内のプレースホルダー詳細情報を取得
    */
   async getPlaceholderInfo(templateBase64: string) {
-    const workbook = await this.templateManager.loadWorkbookFromBase64(templateBase64);
-    return this.placeholderReplacer.getPlaceholderInfo(workbook);
+    const templateBuffer = Buffer.from(templateBase64, 'base64');
+    return this.placeholderReplacer.getPlaceholderInfo(templateBuffer);
   }
 
   /**
    * テンプレートの基本情報を取得
+   * （簡易版 - ZIP構造から取得）
    */
   async getTemplateInfo(templateBase64: string) {
-    const workbook = await this.templateManager.loadWorkbookFromBase64(templateBase64);
-    return this.templateManager.getWorkbookInfo(workbook);
-  }
+    const JSZip = require('jszip');
+    const templateBuffer = Buffer.from(templateBase64, 'base64');
+    const zip = await JSZip.loadAsync(templateBuffer);
 
-  /**
-   * 特定のシートの印刷設定を取得
-   */
-  async getPrintSettings(templateBase64: string, sheetName?: string) {
-    const workbook = await this.templateManager.loadWorkbookFromBase64(templateBase64);
+    // ワークシート数を取得
+    const worksheetFiles = Object.keys(zip.files).filter(
+      (filename) => filename.startsWith('xl/worksheets/sheet') && filename.endsWith('.xml')
+    );
 
-    if (sheetName) {
-      const worksheet = workbook.getWorksheet(sheetName);
-      if (!worksheet) {
-        throw new Error(`Worksheet "${sheetName}" not found`);
-      }
-      return this.templateManager.getPrintSettings(worksheet);
-    }
+    const sheets = await Promise.all(
+      worksheetFiles.map(async (filename, index) => {
+        const content = await zip.file(filename)?.async('string');
 
-    // 全シートの印刷設定を取得
-    const printSettings: { [key: string]: any } = {};
-    workbook.eachSheet((worksheet) => {
-      printSettings[worksheet.name] = this.templateManager.getPrintSettings(worksheet);
-    });
+        // シート名を取得（workbook.xmlから）
+        const workbookXml = await zip.file('xl/workbook.xml')?.async('string');
+        const sheetNameMatch = workbookXml?.match(
+          new RegExp(`<sheet[^>]*sheetId="${index + 1}"[^>]*name="([^"]*)"`)
+        );
+        const sheetName = sheetNameMatch?.[1] || `Sheet${index + 1}`;
 
-    return printSettings;
+        // 行数・列数の概算
+        const dimensionMatch = content?.match(/<dimension[^>]*ref="([^"]*)"/)
+        const dimension = dimensionMatch?.[1] || 'A1';
+
+        return {
+          id: index + 1,
+          name: sheetName,
+          rowCount: 0, // 簡易版では省略
+          columnCount: 0, // 簡易版では省略
+        };
+      })
+    );
+
+    return {
+      sheetCount: worksheetFiles.length,
+      sheets,
+    };
   }
 
   /**
@@ -113,47 +105,12 @@ export class ExcelGenerator {
     templateBase64: string,
     data: PlaceholderData
   ): Promise<NodeJS.ReadableStream> {
-    const workbook = await this.templateManager.loadWorkbookFromBase64(templateBase64);
+    const buffer = await this.generateExcel(templateBase64, data);
 
-    // 印刷設定を保持
-    const printSettingsMap = this.capturePrintSettings(workbook);
+    const { PassThrough } = require('stream');
+    const stream = new PassThrough();
+    stream.end(buffer);
 
-    // プレースホルダーを置換
-    await this.placeholderReplacer.replacePlaceholders(workbook, data);
-
-    // 印刷設定を再適用
-    this.restorePrintSettings(workbook, printSettingsMap);
-
-    // ストリームとして出力
-    const stream = new (require('stream').PassThrough)();
-    await workbook.xlsx.write(stream);
     return stream;
-  }
-
-  /**
-   * ワークブックの印刷設定を保持
-   */
-  private capturePrintSettings(workbook: ExcelJS.Workbook): Map<number, any> {
-    const settings = new Map<number, any>();
-    workbook.eachSheet((worksheet) => {
-      settings.set(worksheet.id, {
-        pageSetup: JSON.parse(JSON.stringify(worksheet.pageSetup)),
-        headerFooter: JSON.parse(JSON.stringify(worksheet.headerFooter)),
-      });
-    });
-    return settings;
-  }
-
-  /**
-   * ワークブックの印刷設定を再適用
-   */
-  private restorePrintSettings(workbook: ExcelJS.Workbook, settings: Map<number, any>): void {
-    workbook.eachSheet((worksheet) => {
-      const saved = settings.get(worksheet.id);
-      if (saved) {
-        worksheet.pageSetup = saved.pageSetup;
-        worksheet.headerFooter = saved.headerFooter;
-      }
-    });
   }
 }

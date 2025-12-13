@@ -35,6 +35,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# cache
+node_modules/.cache
+.swc
+
 # output
 /output
 build.log

@@ -16,12 +16,11 @@ export async function POST(request: NextRequest) {
     const generator = new ExcelGenerator();
 
     const templateInfo = await generator.getTemplateInfo(templateBase64);
-    const printSettings = await generator.getPrintSettings(templateBase64, sheetName);
 
     return NextResponse.json({
       success: true,
       templateInfo,
-      printSettings,
+      note: 'Print settings are automatically preserved (test9 method)',
     });
   } catch (error) {
     console.error('Error getting template info:', error);

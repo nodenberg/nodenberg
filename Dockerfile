@@ -1,8 +1,9 @@
+# Nodenberg - Excel Report Generator
 
 # Base image
 FROM node:20-bullseye
 
-# Install LibreOffice and Japanese fonts
+# Install LibreOffice and Japanese fonts for PDF generation
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     libreoffice-calc \
     libreoffice-l10n-ja \

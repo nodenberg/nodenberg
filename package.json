@@ -1,21 +1,35 @@
 {
   "name": "nodenberg",
-  "version": "1.0.0",
+  "version": "0.0.1",
+  "description": "Excel report generator",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nodenberg/nodenberg.git"
+  },
+  "keywords": ["excel", "report", "generator", "pdf", "print-settings", "placeholder"],
   "license": "MIT",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:clean": "rm -rf .next node_modules/.cache && next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "clean": "rm -rf .next node_modules/.cache"
   },
   "dependencies": {
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
     "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "jszip": "^3.10.1",
     "next": "^14.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^20.0.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
