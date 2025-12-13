@@ -59,6 +59,24 @@ npm start
 
 ## Troubleshooting
 
+### PDF Print Settings Issue on First Generation
+
+**Problem**: The first PDF generation after server start may have incorrect print settings, but subsequent generations work correctly.
+
+**Cause**: LibreOffice requires initialization on first run to create its user profile. During this initialization, Excel file parsing may be incomplete.
+
+**Solution**: The application automatically initializes LibreOffice on startup (in production mode with `npm start`). For development mode, you can manually initialize:
+
+```bash
+# Manually initialize LibreOffice
+npm run init-libreoffice
+
+# Then start development server
+npm run dev
+```
+
+**Docker**: The Docker image pre-initializes LibreOffice during build, so this issue won't occur in containerized deployments.
+
 ### Code Changes Not Reflected
 
 If your code changes are not reflected in the development server, clear the Next.js cache:

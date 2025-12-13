@@ -27,6 +27,9 @@ COPY . .
 # Build the application
 RUN npm run build
 
+# Initialize LibreOffice user profile to prevent first-run issues
+RUN node scripts/init-libreoffice.js || true
+
 # Expose port
 EXPOSE 3000
 

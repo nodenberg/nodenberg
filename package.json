@@ -13,9 +13,11 @@
     "dev": "next dev",
     "build": "next build",
     "build:clean": "rm -rf .next node_modules/.cache && next build",
-    "start": "next start",
+    "start": "node scripts/init-libreoffice.js && next start",
+    "start:no-init": "next start",
     "lint": "next lint",
-    "clean": "rm -rf .next node_modules/.cache"
+    "clean": "rm -rf .next node_modules/.cache",
+    "init-libreoffice": "node scripts/init-libreoffice.js"
   },
   "dependencies": {
     "axios": "^1.13.2",
