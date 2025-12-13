@@ -46,3 +46,4 @@ build.log
 # test
 /tests
 
+dist/
