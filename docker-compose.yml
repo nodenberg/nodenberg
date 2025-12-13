@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  nodenberg-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nodenberg-api
+    ports:
+      - "3200:3100"
+    environment:
+      - NODE_ENV=production
+      - PORT=3100
+      - API_KEY=${API_KEY:-default-secret-key-please-change-this}
+    # volumes:
+      # Optional: Mount templates directory if needed
+      # - ./templates:/app/templates:ro
+      # Optional: Mount output directory for debugging
+      # - ./output:/app/output
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - nodenberg-network
+
+networks:
+  nodenberg-network:
+    driver: bridge
