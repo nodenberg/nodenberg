@@ -13,17 +13,44 @@ Node.js-based Excel report generation system with print settings preservation. T
 
 ## Quick Start
 
-### Using Docker (Recommended)
+### Using Docker Compose (Recommended)
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/nodenberg/nodenberg.git
+cd nodenberg
+
+# 2. Create .env file
+cp .env.example .env
+
+# 3. Generate secure API key
+echo "API_KEY=$(openssl rand -base64 32)" >> .env
+
+# 4. Start with Docker Compose
+docker compose up -d
+
+# 5. Check status
+docker compose ps
+```
+
+The application will be available at `http://localhost:3200`.
+
+**詳細なDockerの使用方法は [DOCKER.md](DOCKER.md) を参照してください。**
+
+### Manual Docker Setup
 
 ```bash
 # Build the image
-docker build -t nodenberg .
+docker build -t nodenberg-api .
 
 # Run the container
-docker run -d -p 3000:3000 --name nodenberg nodenberg
+docker run -d \
+  -p 3200:3100 \
+  -e API_KEY=your-secret-api-key \
+  -e PORT=3100 \
+  --name nodenberg-api \
+  nodenberg-api
 ```
-
-The application will be available at `http://localhost:3000`.
 
 ### Local Development
 

@@ -1,9 +1,43 @@
+# Dependencies
 node_modules
-.next
+npm-debug.log*
+
+# Build output
+dist
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Git
 .git
-build.log
-Dockerfile
-README.md
-LICENSE
 .gitignore
-.env*
+
+# IDE
+.vscode
+.idea
+
+# Test output
+tests/output-*.xlsx
+tests/output-*.pdf
+tests/test-output.xlsx
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation (optional - remove if you want to include docs in image)
+# README.md
+# API.md
+# LICENSE
+
+# Development files
+.next
+build.log
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

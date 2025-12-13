@@ -3,12 +3,13 @@
 # Base image
 FROM node:20-bullseye
 
-# Install LibreOffice and Japanese fonts for PDF generation
+# Install LibreOffice, Japanese fonts, and curl for PDF generation and healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     libreoffice-calc \
     libreoffice-l10n-ja \
     fonts-noto-cjk \
     fonts-noto-cjk-extra \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

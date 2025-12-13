@@ -42,3 +42,7 @@ node_modules/.cache
 # output
 /output
 build.log
+
+# test
+/tests
+

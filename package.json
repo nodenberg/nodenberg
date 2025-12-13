@@ -1,43 +1,45 @@
 {
   "name": "nodenberg",
   "version": "0.0.1",
-  "description": "Excel report generator",
+  "description": "Excel report generator (Pure Express API Server)",
   "repository": {
     "type": "git",
     "url": "https://github.com/nodenberg/nodenberg.git"
   },
-  "keywords": ["excel", "report", "generator", "pdf", "print-settings", "placeholder"],
+  "keywords": [
+    "excel",
+    "report",
+    "generator",
+    "pdf",
+    "print-settings",
+    "placeholder",
+    "api",
+    "express"
+  ],
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "build:clean": "rm -rf .next node_modules/.cache && next build",
-    "start": "node scripts/init-libreoffice.js && next start",
-    "start:no-init": "next start",
-    "lint": "next lint",
-    "clean": "rm -rf .next node_modules/.cache",
+    "dev": "nodemon --watch src --ext ts --exec tsx src/server.ts",
+    "build": "tsc",
+    "start": "node scripts/init-libreoffice.js && node dist/server.js",
+    "start:no-init": "node dist/server.js",
+    "test": "node tests/test-api.js",
+    "clean": "rm -rf dist",
     "init-libreoffice": "node scripts/init-libreoffice.js"
   },
   "dependencies": {
-    "axios": "^1.13.2",
     "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
-    "jszip": "^3.10.1",
-    "next": "^14.0.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "jszip": "^3.10.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^20.0.0",
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "autoprefixer": "^10.4.16",
-    "postcss": "^8.4.31",
-    "tailwindcss": "^3.3.5",
+    "nodemon": "^3.0.2",
+    "tsx": "^4.7.0",
     "typescript": "^5.0.0"
   }
 }
