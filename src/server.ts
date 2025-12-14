@@ -12,11 +12,17 @@ const API_KEY = process.env.API_KEY;
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+// Preflight (OPTIONS) は API_KEY 認証の前に通す（ブラウザからの POST が CORS preflight になるため）
+app.options(/.*/, cors());
 
 // API Key Authentication Middleware (required)
 const apiKeyAuth = (req: Request, res: Response, next: NextFunction) => {
   // Skip authentication for health check endpoint
   if (req.path === '/health') {
+    return next();
+  }
+  // CORS preflight は API_KEY を付けないため、ここで止めるとブラウザからのリクエストが全滅する
+  if (req.method === 'OPTIONS') {
     return next();
   }
 

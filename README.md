@@ -1,15 +1,20 @@
 # Nodenberg - Excel Report Generator
 
-Node.js-based Excel report generation system with print settings preservation. This application uses the innovative **test9 method** to maintain 100% print settings integrity while replacing placeholders in Excel templates.
+Node.js-based Excel report generation system with print settings preservation.
+
+- Base placeholder replacement: **test9 method** (edits `xl/sharedStrings.xml`)
+- Table (array) expansion + multi-page print area: **test13-like behavior**
+  - Inserts rows into `xl/worksheets/sheet1.xml` when array data exceeds template rows
+  - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
 
 ## Features
 
-- 🎯 **100% Print Settings Preservation** - test9 method maintains all Excel print settings
+- 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, also updates `sheet1.xml` + `workbook.xml` as needed
 - ⚡ **Fast Processing** - Direct XML manipulation (~50-100ms per document)
 - 🔒 **Secure** - W3C-compliant XML escaping prevents injection attacks
 - 🐳 **Docker Ready** - Includes LibreOffice and Japanese fonts
 - 🌐 **REST API** - Easy integration with existing systems
-- 🖥️ **Web UI** - User-friendly interface for template upload and generation
+- 🧪 **Test Client** - Separate static client in `04_api-test-client`
 
 ## Quick Start
 
@@ -64,23 +69,23 @@ npm run dev
 
 ## API Endpoints
 
-### Next.js API Routes (Port 3000)
+### Express API (default: Port 3000 / Docker: Port 3200)
 
-- **POST /api/template/placeholders** - Detect placeholders in template
-- **POST /api/template/info** - Get template information
-- **POST /api/generate/excel** - Generate Excel file
-- **POST /api/generate/pdf** - Generate PDF file (requires LibreOffice)
+- **GET  /health** - Health check (no API key required)
+- **POST /template/placeholders** - Detect placeholders in template
+- **POST /template/info** - Get template information
+- **POST /template/upload** - Upload template metadata (optional JSON template generation)
+- **POST /generate/excel** - Generate Excel file (supports table expansion)
+- **POST /generate/pdf** - Generate PDF file (requires LibreOffice)
+
+See `03_docker-version/docs/API.md` for request/response examples.
 
 ### Build for Production
 
 ```bash
-# Clean build (recommended)
-npm run build:clean
-
-# Normal build
 npm run build
 
-# Start production server
+# Start production server (runs LibreOffice init + starts API)
 npm start
 ```
 
@@ -106,16 +111,11 @@ npm run dev
 
 ### Code Changes Not Reflected
 
-If your code changes are not reflected in the development server, clear the Next.js cache:
+If code changes are not reflected:
 
 ```bash
-# Clear cache and restart dev server
-npm run clean
-npm run dev
-
-# Or clean build and start
-npm run build:clean
-npm run dev
+# Rebuild TypeScript output
+npm run build
 ```
 
 ### Build Errors Not Resolving
@@ -123,8 +123,8 @@ npm run dev
 If build errors persist even after fixing the code:
 
 ```bash
-# Complete clean build
-rm -rf node_modules .next node_modules/.cache
+# Clean build artifacts and reinstall
+rm -rf node_modules dist
 npm install
 npm run build
 ```
@@ -135,22 +135,20 @@ If the app behaves differently in development (`npm run dev`) vs production (`np
 
 ```bash
 # Test with production build locally
-npm run build:clean
+npm run build
 npm start
 ```
 
-**Note**: Always use `npm run build:clean` before deploying to avoid cache-related issues.
+**Note**: Production runs a LibreOffice initialization step on startup.
 
 ### Available Commands
 
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Start development server (with cache) |
-| `npm run build` | Build for production (with cache) |
-| `npm run build:clean` | Clean build (removes .next and cache) |
-| `npm run start` | Start production server |
-| `npm run clean` | Remove cache only |
-| `npm run lint` | Run ESLint |
+| `npm run build` | Build TypeScript to `dist/` |
+| `npm start` | Initialize LibreOffice + start server |
+| `npm run start:no-init` | Start server without LibreOffice init |
 
 ## Architecture
 
@@ -160,11 +158,13 @@ This application uses the **test9 method** for Excel generation, which:
 
 1. **Reads Excel as ZIP**: .xlsx files are ZIP archives containing XML files
 2. **Edits sharedStrings.xml directly**: Placeholders are stored in `xl/sharedStrings.xml`
-3. **Preserves print settings**: `xl/worksheets/sheet1.xml` is never modified
+3. **Preserves print settings**:
+   - For normal placeholders: `sheet1.xml` is not modified
+   - For table expansion (`{{#...}}`): `sheet1.xml` and `workbook.xml` may be updated (rows inserted + Print_Area paged)
 4. **XML escaping**: All user input is automatically escaped using W3C-compliant XML escaping
 
 **Benefits**:
-- ✅ 100% print settings preservation (no normalization)
+- ✅ Print settings are kept from the template
 - ✅ Fast processing (~50-100ms)
 - ✅ Secure (automatic XML escaping)
 - ✅ No manual validation required
@@ -193,6 +193,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- Built with [Next.js](https://nextjs.org/)
+- Built with Express + TypeScript
 - Uses [JSZip](https://stuk.github.io/jszip/) for Excel file manipulation
 - PDF generation powered by [LibreOffice](https://www.libreoffice.org/)

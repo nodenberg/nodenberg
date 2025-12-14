@@ -1,11 +1,23 @@
 # Nodenberg API Documentation
 
-Pure Express API Server for Excel & PDF generation with test9 method.
+Pure Express API Server for Excel & PDF generation.
+
+- Base placeholder replacement: **test9 method** (edit `xl/sharedStrings.xml`)
+- Table (array) expansion + multi-page print area: **test13-like behavior**
+  - Inserts rows into `xl/worksheets/sheet1.xml` when array data exceeds template rows
+  - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
+    - Example: `$A$1:$Q$40` → `$A$1:$Q$40,$A$41:$Q$80`
 
 ## Base URL
 
+Local (dev):
 ```
 http://localhost:3000
+```
+
+Docker (compose default):
+```
+http://localhost:3200
 ```
 
 ---
@@ -45,6 +57,10 @@ curl -H "X-API-Key: your-secret-api-key-here" \
 - If `API_KEY` is not configured, the server will return a 500 error
 - Keep your API key secret and never commit it to version control
 - Use different keys for development and production
+
+**Browser clients (CORS):**
+- Preflight `OPTIONS` requests are allowed without API key.
+- Actual API requests still require `X-API-Key` (except `/health`).
 
 ### Error Responses
 
@@ -113,7 +129,7 @@ Detect placeholders in Excel template.
 ```json
 {
   "success": true,
-  "placeholders": ["会社名", "日付", "金額", "担当者"]
+  "placeholders": ["会社名", "請求日", "支払期限", "#明細.番号", "#明細.項目"]
 }
 ```
 
@@ -124,13 +140,13 @@ Detect placeholders in Excel template.
   "placeholders": [
     {
       "placeholder": "{{会社名}}",
-      "sheets": ["Sheet1"],
-      "occurrences": 2
+      "key": "会社名",
+      "count": 2
     },
     {
-      "placeholder": "{{日付}}",
-      "sheets": ["Sheet1"],
-      "occurrences": 1
+      "placeholder": "{{#明細.番号}}",
+      "key": "#明細.番号",
+      "count": 9
     }
   ]
 }
@@ -172,14 +188,16 @@ Get template metadata (sheets, cells, etc.).
     "sheetCount": 2,
     "sheets": [
       {
+        "id": 1,
         "name": "Sheet1",
-        "rowCount": 10,
-        "columnCount": 5
+        "rowCount": 0,
+        "columnCount": 0
       },
       {
+        "id": 2,
         "name": "Sheet2",
-        "rowCount": 15,
-        "columnCount": 8
+        "rowCount": 0,
+        "columnCount": 0
       }
     ]
   }
@@ -206,25 +224,28 @@ Upload template and optionally generate JSON template.
 **Request Body:**
 ```json
 {
-  "templateBase64": "UEsDBBQABg...",
-  "generateJson": true
+  "templateId": "invoice-v1",
+  "templateName": "請求書テンプレート",
+  "base64Data": "UEsDBBQABg...",
+  "generateJsonTemplate": true
 }
 ```
 
 **Parameters:**
-- `templateBase64` (required): Base64-encoded Excel file
-- `generateJson` (optional): Generate sample JSON data (default: false)
+- `templateId` (required): Template identifier (string)
+- `templateName` (required): Human-readable name (string)
+- `base64Data` (required): Base64-encoded Excel file
+- `generateJsonTemplate` (optional): Generate a JSON template by reading the workbook via ExcelJS (default: false)
 
 **Response:**
 ```json
 {
   "success": true,
-  "message": "Template uploaded successfully",
-  "sampleData": {
-    "会社名": "",
-    "日付": "",
-    "金額": "",
-    "担当者": ""
+  "template": {
+    "id": "invoice-v1",
+    "name": "請求書テンプレート",
+    "uploadedAt": "2025-12-14T11:00:00.000Z",
+    "hasJsonTemplate": true
   }
 }
 ```
@@ -252,10 +273,14 @@ Generate Excel file by replacing placeholders with data.
 {
   "templateBase64": "UEsDBBQABg...",
   "data": {
+    "担当者": "山田太郎",
     "会社名": "テスト株式会社",
-    "日付": "2025/12/13",
-    "金額": "¥1,234,567",
-    "担当者": "山田太郎"
+    "請求日": "2025年12月1日",
+    "支払期限": "2025年12月31日",
+    "明細": [
+      { "番号": 1, "項目": "Webデザイン一式", "数量": 15, "単位": "個", "単価": 8000 },
+      { "番号": 2, "項目": "バナー制作", "数量": 5, "単位": "個", "単価": 6000 }
+    ]
   }
 }
 ```
@@ -295,9 +320,11 @@ cat response.json | jq -r '.data' | base64 -d > output.xlsx
 ```
 
 **Important Notes:**
-- Uses **test9 method** for placeholder replacement
-- Preserves **100% of print settings** (headers, footers, margins, page setup)
-- Direct XML manipulation via JSZip
+- Uses **test9 method** for normal placeholders (edits `xl/sharedStrings.xml`)
+- If the template uses array placeholders like `{{#明細.項目}}`, the server may also:
+  - Insert rows into `xl/worksheets/sheet1.xml` to fit array data (template row style/merge-cells are duplicated)
+  - Update `xl/workbook.xml` `_xlnm.Print_Area` to add page ranges when 1+ rows overflow
+- Current limitation: array expansion targets `sheet1.xml` and the first detected array only
 
 ---
 
@@ -432,6 +459,20 @@ Placeholders in Excel templates should use the following format:
 {{placeholder_name}}
 ```
 
+### Array (Table) placeholders
+
+For table expansion, use:
+```
+{{#ArrayName.field}}
+```
+
+Example:
+- `{{#明細.番号}}`
+- `{{#明細.項目}}`
+- `{{#明細.数量}}`
+- `{{#明細.単位}}`
+- `{{#明細.単価}}`
+
 **Examples:**
 - `{{会社名}}`
 - `{{date}}`
@@ -469,6 +510,14 @@ The **test9 method** is the core technology that preserves Excel print settings.
 
 ---
 
+## Multi-page Print Area (test13-like)
+
+If the template has a first print area (via `xl/workbook.xml` `_xlnm.Print_Area`) and content exceeds it:
+- The server appends the next print area with the same height.
+- Example (page height = 40 rows): `$A$1:$Q$40` → `$A$1:$Q$40,$A$41:$Q$80`
+
+---
+
 ## Testing
 
 ### CLI Test Suite
@@ -488,10 +537,9 @@ npm test
 
 ### GUI Test Client
 
-Open in browser:
-```
-http://localhost:3000/
-```
+This project does not ship a Next.js UI.
+
+Use the separate static test client in `04_api-test-client` (served by `http-server`).
 
 **Features:**
 - File upload
