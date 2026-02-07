@@ -215,7 +215,56 @@ curl -X POST http://localhost:3000/template/info \
 
 ---
 
-### 4. Upload Template
+### 4. Get Sheet List
+
+Get sheet list with display order, `sheetId`, and sheet name.
+
+**Endpoint:** `POST /template/sheets`
+
+**Request Body:**
+```json
+{
+  "templateBase64": "UEsDBBQABg..."
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "sheetCount": 3,
+  "sheets": [
+    {
+      "displayOrder": 1,
+      "id": 1,
+      "name": "スタンダード請求書 単位あり 10％"
+    },
+    {
+      "displayOrder": 2,
+      "id": 2,
+      "name": "スタンダード請求書 単位あり 10％ _2"
+    },
+    {
+      "displayOrder": 3,
+      "id": 3,
+      "name": "参照シート"
+    }
+  ]
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/template/sheets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "templateBase64": "UEsDBBQABg..."
+  }'
+```
+
+---
+
+### 5. Upload Template
 
 Upload template and optionally generate JSON template.
 
@@ -262,7 +311,7 @@ curl -X POST http://localhost:3000/template/upload \
 
 ---
 
-### 5. Generate Excel
+### 6. Generate Excel
 
 Generate Excel file by replacing placeholders with data.
 
@@ -332,7 +381,51 @@ cat response.json | jq -r '.data' | base64 -d > output.xlsx
 
 ---
 
-### 6. Generate PDF
+### 7. Generate Excel (By Display Order)
+
+Generate Excel by selecting one sheet using display order (1-based).
+
+**Endpoint:** `POST /generate/excel/by-display-order`
+
+**Request Body:**
+```json
+{
+  "templateBase64": "UEsDBBQABg...",
+  "data": {
+    "会社名": "テスト株式会社",
+    "日付": "2025/12/13",
+    "金額": "¥1,234,567",
+    "担当者": "山田太郎"
+  },
+  "displayOrder": 1
+}
+```
+
+**Parameters:**
+- `templateBase64` (required): Base64-encoded Excel template
+- `data` (required): Object with placeholder replacements
+- `displayOrder` (required): 1-based sheet display order
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/generate/excel/by-display-order \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key-here" \
+  -d '{
+    "templateBase64": "UEsDBBQABg...",
+    "data": {
+      "会社名": "テスト株式会社",
+      "日付": "2025/12/13",
+      "金額": "¥1,234,567",
+      "担当者": "山田太郎"
+    },
+    "displayOrder": 1
+  }'
+```
+
+---
+
+### 8. Generate PDF
 
 Generate PDF file from Excel template (requires LibreOffice).
 
@@ -388,6 +481,54 @@ curl -X POST http://localhost:3000/generate/pdf \
 
 # Extract and decode the file
 cat response.json | jq -r '.data' | base64 -d > output.pdf
+```
+
+---
+
+### 9. Generate PDF (By Display Order)
+
+Generate PDF by selecting one sheet using display order (1-based).
+
+**Endpoint:** `POST /generate/pdf/by-display-order`
+
+**Request Body:**
+```json
+{
+  "templateBase64": "UEsDBBQABg...",
+  "data": {
+    "会社名": "テスト株式会社",
+    "日付": "2025/12/13",
+    "金額": "¥1,234,567",
+    "担当者": "山田太郎"
+  },
+  "displayOrder": 1,
+  "options": {
+    "timeout": 30000
+  }
+}
+```
+
+**Parameters:**
+- `templateBase64` (required): Base64-encoded Excel template
+- `data` (required): Object with placeholder replacements
+- `displayOrder` (required): 1-based sheet display order
+- `options` (optional): PDF generation options (soffice command, timeout, etc.)
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/generate/pdf/by-display-order \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key-here" \
+  -d '{
+    "templateBase64": "UEsDBBQABg...",
+    "data": {
+      "会社名": "テスト株式会社",
+      "日付": "2025/12/13",
+      "金額": "¥1,234,567",
+      "担当者": "山田太郎"
+    },
+    "displayOrder": 1
+  }'
 ```
 
 **Requirements:**

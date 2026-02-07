@@ -61,6 +61,15 @@ const handleError = (res: Response, error: unknown, message: string) => {
 
 type SheetSelectBy = 'id' | 'name';
 
+function parseDisplayOrder(body: any): number {
+  const value = body?.displayOrder;
+  const asNumber = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(asNumber) || asNumber <= 0) {
+    throw new Error('Invalid displayOrder (must be integer >= 1)');
+  }
+  return asNumber;
+}
+
 function parseSheetSelector(body: any):
   | { sheetId: number; sheetName?: undefined }
   | { sheetName: string; sheetId?: undefined }
@@ -159,6 +168,31 @@ app.post('/template/info', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /template/sheets
+ * Get sheet list with display order and sheetId
+ */
+app.post('/template/sheets', async (req: Request, res: Response) => {
+  try {
+    const { templateBase64 } = req.body;
+
+    if (!templateBase64) {
+      return res.status(400).json({ error: 'Template base64 data is required' });
+    }
+
+    const generator = new ExcelGenerator();
+    const sheets = await generator.getTemplateSheets(templateBase64);
+
+    return res.json({
+      success: true,
+      sheetCount: sheets.length,
+      sheets,
+    });
+  } catch (error) {
+    handleError(res, error, 'Failed to get sheet list');
+  }
+});
+
+/**
  * POST /template/upload
  * Upload template (store with optional JSON template generation)
  */
@@ -238,6 +272,55 @@ app.post('/generate/excel', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /generate/excel/by-display-order
+ * Generate Excel file by selecting a sheet via display order (1-based)
+ */
+app.post('/generate/excel/by-display-order', async (req: Request, res: Response) => {
+  try {
+    const { templateBase64, data } = req.body;
+
+    if (!templateBase64) {
+      return res.status(400).json({ error: 'Template base64 data is required' });
+    }
+
+    if (!data) {
+      return res.status(400).json({ error: 'Placeholder data is required' });
+    }
+
+    const generator = new ExcelGenerator();
+    let excelBuffer: Buffer;
+    try {
+      const displayOrder = parseDisplayOrder(req.body);
+      const sheets = await generator.getTemplateSheets(templateBase64);
+      const selectedSheet = sheets.find((s) => s.displayOrder === displayOrder);
+      if (!selectedSheet) {
+        return res.status(400).json({
+          error: 'Invalid displayOrder',
+          details: `displayOrder=${displayOrder} is out of range (1..${sheets.length})`,
+        });
+      }
+
+      excelBuffer = await generator.generateExcel(templateBase64, data, { sheetName: selectedSheet.name });
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid displayOrder',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
+
+    const base64Result = excelBuffer.toString('base64');
+
+    return res.json({
+      success: true,
+      data: base64Result,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+  } catch (error) {
+    handleError(res, error, 'Failed to generate Excel');
+  }
+});
+
+/**
  * POST /generate/pdf
  * Generate PDF file from Excel template (requires LibreOffice)
  */
@@ -295,6 +378,72 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /generate/pdf/by-display-order
+ * Generate PDF by selecting a sheet via display order (1-based)
+ */
+app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) => {
+  try {
+    const { templateBase64, data, options } = req.body;
+
+    if (!templateBase64) {
+      return res.status(400).json({ error: 'Template base64 data is required' });
+    }
+
+    if (!data) {
+      return res.status(400).json({ error: 'Placeholder data is required' });
+    }
+
+    const generator = new PDFGenerator(options);
+
+    const isInstalled = await generator.checkLibreOfficeInstalled();
+    if (!isInstalled) {
+      return res.status(503).json({
+        error: 'LibreOffice is not installed',
+        details: 'PDF generation requires LibreOffice. Please install it from https://www.libreoffice.org/download/download/',
+        sofficeCommand: generator.getSofficeCommand(),
+        installInstructions: {
+          windows: 'Download and install from https://www.libreoffice.org/download/download/',
+          macOS: 'Run: brew install --cask libreoffice',
+          linux: 'Run: sudo apt-get install libreoffice',
+        },
+      });
+    }
+
+    let pdfBuffer: Buffer;
+    try {
+      const displayOrder = parseDisplayOrder(req.body);
+      const excelGenerator = new ExcelGenerator();
+      const sheets = await excelGenerator.getTemplateSheets(templateBase64);
+      const selectedSheet = sheets.find((s) => s.displayOrder === displayOrder);
+      if (!selectedSheet) {
+        return res.status(400).json({
+          error: 'Invalid displayOrder',
+          details: `displayOrder=${displayOrder} is out of range (1..${sheets.length})`,
+        });
+      }
+
+      const pdfOptions = { ...(options || {}), sheetName: selectedSheet.name };
+      pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid displayOrder',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
+
+    const base64Result = pdfBuffer.toString('base64');
+
+    return res.json({
+      success: true,
+      data: base64Result,
+      mimeType: 'application/pdf',
+    });
+  } catch (error) {
+    handleError(res, error, 'Failed to generate PDF');
+  }
+});
+
 // ===== 404 Handler =====
 app.use((req: Request, res: Response) => {
   res.status(404).json({
@@ -304,9 +453,12 @@ app.use((req: Request, res: Response) => {
       'GET /health',
       'POST /template/placeholders',
       'POST /template/info',
+      'POST /template/sheets',
       'POST /template/upload',
       'POST /generate/excel',
+      'POST /generate/excel/by-display-order',
       'POST /generate/pdf',
+      'POST /generate/pdf/by-display-order',
     ],
   });
 });
@@ -328,9 +480,12 @@ app.listen(port, () => {
   console.log('  • GET  /health');
   console.log('  • POST /template/placeholders');
   console.log('  • POST /template/info');
+  console.log('  • POST /template/sheets');
   console.log('  • POST /template/upload');
   console.log('  • POST /generate/excel');
+  console.log('  • POST /generate/excel/by-display-order');
   console.log('  • POST /generate/pdf');
+  console.log('  • POST /generate/pdf/by-display-order');
   console.log('');
   console.log('Press Ctrl+C to stop');
   console.log('');
