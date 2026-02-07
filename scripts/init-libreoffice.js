@@ -5,6 +5,7 @@
  *
  * アプリケーション起動前にLibreOfficeを初期化して、
  * 初回PDF生成時の印刷設定の問題を回避します。
+ * Dockerfileで呼び出して実行する。
  */
 
 const { exec } = require('child_process');

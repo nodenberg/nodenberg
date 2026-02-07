@@ -1,4 +1,19 @@
 import { PlaceholderReplacer, PlaceholderData } from './placeholderReplacer';
+import { selectSingleSheetFromWorkbookBuffer } from './sheetSelector';
+
+export interface ExcelGenerationOptions {
+  /**
+   * 特定のシートのみを残す（指定しない場合は全シート）
+   */
+  sheetName?: string;
+  sheetId?: number;
+}
+
+export interface SheetSummary {
+  displayOrder: number;
+  id: number;
+  name: string;
+}
 
 export class ExcelGenerator {
   private placeholderReplacer: PlaceholderReplacer;
@@ -13,7 +28,8 @@ export class ExcelGenerator {
    */
   async generateExcel(
     templateBase64: string,
-    data: PlaceholderData
+    data: PlaceholderData,
+    options: ExcelGenerationOptions = {}
   ): Promise<Buffer> {
     // Base64をBufferに変換
     const templateBuffer = Buffer.from(templateBase64, 'base64');
@@ -24,6 +40,11 @@ export class ExcelGenerator {
       data
     );
 
+    // 特定のシートのみを残す場合（XLSX XMLを直接編集して印刷設定を保持）
+    if (options.sheetName || options.sheetId !== undefined) {
+      return await selectSingleSheetFromWorkbookBuffer(resultBuffer, options);
+    }
+
     return resultBuffer;
   }
 
@@ -32,9 +53,10 @@ export class ExcelGenerator {
    */
   async generateExcelAsBase64(
     templateBase64: string,
-    data: PlaceholderData
+    data: PlaceholderData,
+    options: ExcelGenerationOptions = {}
   ): Promise<string> {
-    const buffer = await this.generateExcel(templateBase64, data);
+    const buffer = await this.generateExcel(templateBase64, data, options);
     return buffer.toString('base64');
   }
 
@@ -96,6 +118,42 @@ export class ExcelGenerator {
       sheetCount: worksheetFiles.length,
       sheets,
     };
+  }
+
+  /**
+   * テンプレート内のシート一覧を取得（表示順 + sheetId + シート名）
+   */
+  async getTemplateSheets(templateBase64: string): Promise<SheetSummary[]> {
+    const JSZip = require('jszip');
+    const templateBuffer = Buffer.from(templateBase64, 'base64');
+    const zip = await JSZip.loadAsync(templateBuffer);
+    const workbookXml = await zip.file('xl/workbook.xml')?.async('string');
+    if (!workbookXml) {
+      throw new Error('workbook.xml not found');
+    }
+
+    const sheetsBlock = workbookXml.match(/<sheets>([\s\S]*?)<\/sheets>/);
+    if (!sheetsBlock) return [];
+
+    const decodeXml = (value: string): string => value
+      .replace(/&apos;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&gt;/g, '>')
+      .replace(/&lt;/g, '<')
+      .replace(/&amp;/g, '&');
+
+    const sheetTags = sheetsBlock[1].match(/<sheet\b[^>]*\/>/g) || [];
+    return sheetTags.map((tag: string, index: number) => {
+      const idMatch = tag.match(/\bsheetId="(\d+)"/);
+      const nameMatch = tag.match(/\bname="([^"]*)"/);
+      const id = idMatch ? Number(idMatch[1]) : index + 1;
+      const name = nameMatch ? decodeXml(nameMatch[1]) : `Sheet${index + 1}`;
+      return {
+        displayOrder: index + 1,
+        id,
+        name,
+      };
+    });
   }
 
   /**
