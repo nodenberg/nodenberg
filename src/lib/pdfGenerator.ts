@@ -21,6 +21,12 @@ export interface PDFGenerationOptions {
    * 特定のシートのみをPDFに変換（指定しない場合は全シート）
    */
   sheetName?: string;
+
+  /**
+   * 特定のシートのみをPDFに変換（sheetIdで指定）
+   * sheetName と同時に指定された場合は sheetId を優先します。
+   */
+  sheetId?: number;
 }
 
 export class PDFGenerator {
@@ -57,21 +63,25 @@ export class PDFGenerator {
 
     // 特定のシートのみを処理する場合
     // 注意: test9方式ではシート削除にExcelJSが必要
-    if (options.sheetName) {
+    if (options.sheetName || options.sheetId !== undefined) {
       // ExcelJSを使用してシート削除
       const ExcelJS = require('exceljs');
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(excelBuffer);
 
       // 指定されたシート以外を削除
-      const targetSheet = workbook.getWorksheet(options.sheetName);
+      const targetSheet =
+        options.sheetId !== undefined
+          ? workbook.getWorksheet(options.sheetId)
+          : workbook.getWorksheet(options.sheetName);
       if (!targetSheet) {
-        throw new Error(`Worksheet "${options.sheetName}" not found`);
+        const selector = options.sheetId !== undefined ? `id=${options.sheetId}` : `name=${options.sheetName}`;
+        throw new Error(`Worksheet not found (${selector})`);
       }
 
       // 全シートを取得して、指定されたシート以外を削除
       const sheetsToRemove = workbook.worksheets.filter(
-        (sheet: any) => sheet.name !== options.sheetName
+        (sheet: any) => sheet.id !== targetSheet.id
       );
 
       sheetsToRemove.forEach((sheet: any) => {

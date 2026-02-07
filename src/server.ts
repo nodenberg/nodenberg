@@ -59,6 +59,36 @@ const handleError = (res: Response, error: unknown, message: string) => {
   });
 };
 
+type SheetSelectBy = 'id' | 'name';
+
+function parseSheetSelector(body: any):
+  | { sheetId: number; sheetName?: undefined }
+  | { sheetName: string; sheetId?: undefined }
+  | null {
+  const sheetSelectBy = body?.sheetSelectBy as SheetSelectBy | undefined;
+  const sheetSelectValue = body?.sheetSelectValue as unknown;
+
+  // デフォルト: どちらも揃っていない場合は未指定扱い
+  if (!sheetSelectBy || sheetSelectValue === undefined || sheetSelectValue === null) return null;
+
+  if (sheetSelectBy === 'id') {
+    const asNumber = typeof sheetSelectValue === 'number' ? sheetSelectValue : Number(sheetSelectValue);
+    if (!Number.isInteger(asNumber) || asNumber <= 0) {
+      throw new Error('Invalid sheetSelectValue for sheetSelectBy="id" (must be integer >= 1)');
+    }
+    return { sheetId: asNumber };
+  }
+
+  if (sheetSelectBy === 'name') {
+    if (typeof sheetSelectValue !== 'string' || sheetSelectValue.trim() === '') {
+      throw new Error('Invalid sheetSelectValue for sheetSelectBy="name" (must be non-empty string)');
+    }
+    return { sheetName: sheetSelectValue };
+  }
+
+  throw new Error('Invalid sheetSelectBy (must be "id" or "name")');
+}
+
 // ===== Health Check Endpoint =====
 app.get('/health', (req: Request, res: Response) => {
   res.json({
@@ -183,7 +213,16 @@ app.post('/generate/excel', async (req: Request, res: Response) => {
     }
 
     const generator = new ExcelGenerator();
-    const excelBuffer = await generator.generateExcel(templateBase64, data);
+    let excelBuffer: Buffer;
+    try {
+      const selector = parseSheetSelector(req.body);
+      excelBuffer = await generator.generateExcel(templateBase64, data, selector || {});
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid sheet selector',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
 
     // Convert Buffer to base64
     const base64Result = excelBuffer.toString('base64');
@@ -231,7 +270,17 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
       });
     }
 
-    const pdfBuffer = await generator.generatePDF(templateBase64, data, options || {});
+    let pdfBuffer: Buffer;
+    try {
+      const selector = parseSheetSelector(req.body);
+      const pdfOptions = { ...(options || {}), ...(selector || {}) };
+      pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid sheet selector',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
 
     // Convert Buffer to base64
     const base64Result = pdfBuffer.toString('base64');

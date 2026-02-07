@@ -362,6 +362,7 @@ docker compose up -d
 
 # 4. ログで起動確認
 docker compose logs -f
+docker compose logs -f nodenberg-api
 ```
 
 ### バックアップ

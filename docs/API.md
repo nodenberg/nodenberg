@@ -288,6 +288,8 @@ Generate Excel file by replacing placeholders with data.
 **Parameters:**
 - `templateBase64` (required): Base64-encoded Excel template
 - `data` (required): Object with placeholder replacements
+- `sheetSelectBy` (optional): `"id"` or `"name"` (only effective when `sheetSelectValue` is also provided)
+- `sheetSelectValue` (optional): Sheet selector value (integer for `"id"`, string for `"name"`)
 
 **Response:**
 ```json
@@ -311,7 +313,9 @@ curl -X POST http://localhost:3000/generate/excel \
       "日付": "2025/12/13",
       "金額": "¥1,234,567",
       "担当者": "山田太郎"
-    }
+    },
+    "sheetSelectBy": "name",
+    "sheetSelectValue": "スタンダード請求書 単位あり 10％ "
   }' \
   --output response.json
 
@@ -350,6 +354,9 @@ Generate PDF file from Excel template (requires LibreOffice).
 **Parameters:**
 - `templateBase64` (required): Base64-encoded Excel template
 - `data` (required): Object with placeholder replacements
+- `sheetSelectBy` (optional): `"id"` or `"name"` (only effective when `sheetSelectValue` is also provided)
+- `sheetSelectValue` (optional): Sheet selector value (integer for `"id"`, string for `"name"`)
+- `options` (optional): PDF generation options (soffice command, timeout, etc.)
 
 **Response:**
 ```json
@@ -373,7 +380,9 @@ curl -X POST http://localhost:3000/generate/pdf \
       "日付": "2025/12/13",
       "金額": "¥1,234,567",
       "担当者": "山田太郎"
-    }
+    },
+    "sheetSelectBy": "id",
+    "sheetSelectValue": 1
   }' \
   --output response.json
 

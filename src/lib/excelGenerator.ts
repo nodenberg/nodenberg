@@ -1,5 +1,14 @@
 import { PlaceholderReplacer, PlaceholderData } from './placeholderReplacer';
 
+export interface ExcelGenerationOptions {
+  /**
+   * 特定のシートのみを残す（指定しない場合は全シート）
+   * NOTE: シート削除にはExcelJSを使用するため、一部の設定が変化する可能性があります。
+   */
+  sheetName?: string;
+  sheetId?: number;
+}
+
 export class ExcelGenerator {
   private placeholderReplacer: PlaceholderReplacer;
 
@@ -13,7 +22,8 @@ export class ExcelGenerator {
    */
   async generateExcel(
     templateBase64: string,
-    data: PlaceholderData
+    data: PlaceholderData,
+    options: ExcelGenerationOptions = {}
   ): Promise<Buffer> {
     // Base64をBufferに変換
     const templateBuffer = Buffer.from(templateBase64, 'base64');
@@ -24,6 +34,33 @@ export class ExcelGenerator {
       data
     );
 
+    // 特定のシートのみを残す場合（ExcelJSが必要）
+    if (options.sheetName || options.sheetId !== undefined) {
+      const ExcelJS = require('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(resultBuffer as any);
+
+      const targetSheet =
+        options.sheetId !== undefined
+          ? workbook.getWorksheet(options.sheetId)
+          : workbook.getWorksheet(options.sheetName);
+
+      if (!targetSheet) {
+        const selector = options.sheetId !== undefined ? `id=${options.sheetId}` : `name=${options.sheetName}`;
+        throw new Error(`Worksheet not found (${selector})`);
+      }
+
+      const sheetsToRemove = workbook.worksheets.filter(
+        (sheet: any) => sheet.id !== targetSheet.id
+      );
+      sheetsToRemove.forEach((sheet: any) => {
+        workbook.removeWorksheet(sheet.id);
+      });
+
+      const filteredBuffer = await workbook.xlsx.writeBuffer();
+      return Buffer.from(filteredBuffer);
+    }
+
     return resultBuffer;
   }
 
@@ -32,9 +69,10 @@ export class ExcelGenerator {
    */
   async generateExcelAsBase64(
     templateBase64: string,
-    data: PlaceholderData
+    data: PlaceholderData,
+    options: ExcelGenerationOptions = {}
   ): Promise<string> {
-    const buffer = await this.generateExcel(templateBase64, data);
+    const buffer = await this.generateExcel(templateBase64, data, options);
     return buffer.toString('base64');
   }
 
