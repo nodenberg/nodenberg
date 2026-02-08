@@ -4,12 +4,13 @@ Node.js-based Excel report generation system with print settings preservation.
 
 - Base placeholder replacement: **test9 method** (edits `xl/sharedStrings.xml`)
 - Table (array) expansion + multi-page print area: **test13-like behavior**
-  - Inserts rows into `xl/worksheets/sheet1.xml` when array data exceeds template rows
+  - Legacy `{{#array.field}}` and new `{{##section.table.cell}}` placeholders are supported
+  - New section-table mode detects target sheet dynamically and expands multi-row record blocks
   - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
 
 ## Features
 
-- 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, also updates `sheet1.xml` + `workbook.xml` as needed
+- 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, updates target `sheetX.xml` + `workbook.xml` as needed
 - ⚡ **Fast Processing** - Direct XML manipulation (~50-100ms per document)
 - 🔒 **Secure** - W3C-compliant XML escaping prevents injection attacks
 - 🐳 **Docker Ready** - Includes LibreOffice and Japanese fonts
@@ -74,7 +75,7 @@ npm run dev
 - **GET  /health** - Health check (no API key required)
 - **POST /template/placeholders** - Detect placeholders in template
 - **POST /template/info** - Get template information
-- **POST /template/upload** - Upload template metadata (optional JSON template generation)
+- **POST /template/validate** - Validate template metadata (optional JSON template generation)
 - **POST /generate/excel** - Generate Excel file (supports table expansion)
 - **POST /generate/pdf** - Generate PDF file (requires LibreOffice)
 
@@ -159,9 +160,35 @@ This application uses the **test9 method** for Excel generation, which:
 1. **Reads Excel as ZIP**: .xlsx files are ZIP archives containing XML files
 2. **Edits sharedStrings.xml directly**: Placeholders are stored in `xl/sharedStrings.xml`
 3. **Preserves print settings**:
-   - For normal placeholders: `sheet1.xml` is not modified
-   - For table expansion (`{{#...}}`): `sheet1.xml` and `workbook.xml` may be updated (rows inserted + Print_Area paged)
+   - For normal placeholders: worksheet XML is not modified
+   - For table expansion:
+     - Legacy `{{#...}}`: `sheet1.xml` and `workbook.xml` may be updated
+     - Section-table `{{##section.table.cell}}`: target worksheet XML and `workbook.xml` may be updated
 4. **XML escaping**: All user input is automatically escaped using W3C-compliant XML escaping
+
+### Section-table Placeholder Example
+
+Template placeholder:
+
+```text
+{{##請求.明細.項目}}
+```
+
+Request data (`POST /generate/excel`, same v1 endpoint):
+
+```json
+{
+  "data": {
+    "会社名": "テスト株式会社",
+    "請求": {
+      "明細": [
+        { "番号": 1, "項目": "Webデザイン一式", "数量": 2, "単価": 8000 },
+        { "番号": 2, "項目": "バナー制作", "数量": 5, "単価": 6000 }
+      ]
+    }
+  }
+}
+```
 
 **Benefits**:
 - ✅ Print settings are kept from the template

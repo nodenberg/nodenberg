@@ -4,7 +4,8 @@ Pure Express API Server for Excel & PDF generation.
 
 - Base placeholder replacement: **test9 method** (edit `xl/sharedStrings.xml`)
 - Table (array) expansion + multi-page print area: **test13-like behavior**
-  - Inserts rows into `xl/worksheets/sheet1.xml` when array data exceeds template rows
+  - Legacy `{{#array.field}}` and section-table `{{##section.table.cell}}` are supported
+  - Section-table mode detects target sheet dynamically and expands multi-row record blocks
   - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
     - Example: `$A$1:$Q$40` → `$A$1:$Q$40,$A$41:$Q$80`
 
@@ -264,11 +265,11 @@ curl -X POST http://localhost:3000/template/sheets \
 
 ---
 
-### 5. Upload Template
+### 5. Validate Template
 
-Upload template and optionally generate JSON template.
+Validate template payload and optionally generate JSON template.
 
-**Endpoint:** `POST /template/upload`
+**Endpoint:** `POST /template/validate`
 
 **Request Body:**
 ```json
@@ -301,13 +302,18 @@ Upload template and optionally generate JSON template.
 
 **Example:**
 ```bash
-curl -X POST http://localhost:3000/template/upload \
+curl -X POST http://localhost:3000/template/validate \
   -H "Content-Type: application/json" \
   -d '{
-    "templateBase64": "UEsDBBQABg...",
-    "generateJson": true
+    "templateId": "invoice-v1",
+    "templateName": "請求書テンプレート",
+    "base64Data": "UEsDBBQABg...",
+    "generateJsonTemplate": true
   }'
 ```
+
+**Compatibility note:**
+- `POST /template/upload` is kept as a backward-compatible alias and is deprecated.
 
 ---
 
@@ -374,10 +380,15 @@ cat response.json | jq -r '.data' | base64 -d > output.xlsx
 
 **Important Notes:**
 - Uses **test9 method** for normal placeholders (edits `xl/sharedStrings.xml`)
-- If the template uses array placeholders like `{{#明細.項目}}`, the server may also:
-  - Insert rows into `xl/worksheets/sheet1.xml` to fit array data (template row style/merge-cells are duplicated)
-  - Update `xl/workbook.xml` `_xlnm.Print_Area` to add page ranges when 1+ rows overflow
-- Current limitation: array expansion targets `sheet1.xml` and the first detected array only
+- If the template uses array placeholders like `{{#明細.項目}}` (legacy), the server may also:
+  - Insert rows into `xl/worksheets/sheet1.xml` to fit array data
+  - Update `xl/workbook.xml` `_xlnm.Print_Area` when rows overflow
+- If the template uses section-table placeholders like `{{##請求.明細.項目}}` (recommended), the server:
+  - Detects the target sheet dynamically (not fixed to `sheet1.xml`)
+  - Treats the contiguous rows containing the same `section.table` placeholders as one record block
+  - Duplicates the whole block per record and preserves style/merge-cells
+  - Auto-extends `_xlnm.Print_Area` for the target sheet when rows overflow
+- `{{#...}}` and `{{##...}}` cannot be mixed in the same template
 
 ---
 
@@ -622,6 +633,38 @@ Example:
 - `{{#明細.数量}}`
 - `{{#明細.単位}}`
 - `{{#明細.単価}}`
+
+### Section + Table placeholders (multi-row block)
+
+For multi-row record expansion, use:
+```
+{{##section.table.cell}}
+```
+
+Example:
+- `{{##請求.明細.番号}}`
+- `{{##請求.明細.項目}}`
+- `{{##請求.明細.数量}}`
+- `{{##請求.明細.単価}}`
+
+JSON mapping (v1 endpoint compatible):
+```json
+{
+  "data": {
+    "請求": {
+      "明細": [
+        { "番号": 1, "項目": "Webデザイン", "数量": 2, "単価": 8000 },
+        { "番号": 2, "項目": "バナー制作", "数量": 5, "単価": 6000 }
+      ]
+    }
+  }
+}
+```
+
+Rules:
+- Same `section` cannot appear in multiple blocks in one template (error)
+- Rows for one `section.table` block must be contiguous
+- If data is shorter than template block count, remaining template block cells are cleared
 
 **Examples:**
 - `{{会社名}}`

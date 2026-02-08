@@ -1,24 +1,72 @@
 import JSZip from 'jszip';
 
+export type PlaceholderPrimitive = string | number | Date | null;
+export type PlaceholderObject = Record<string, unknown>;
+export type PlaceholderArray = Array<PlaceholderObject>;
+export type PlaceholderValue = PlaceholderPrimitive | PlaceholderArray | PlaceholderObject;
+
 export interface PlaceholderData {
-  [key: string]:
-    | string
-    | number
-    | Date
-    | null
-    | Array<Record<string, unknown>>;
+  [key: string]: PlaceholderValue;
 }
+
+type LegacyArrayPlaceholder = {
+  placeholderKey: string;
+  arrayName: string;
+  fieldPath: string;
+};
+
+type SectionTablePlaceholder = {
+  placeholderKey: string;
+  section: string;
+  table: string;
+  cellPath: string;
+};
+
+type TableBlock = {
+  section: string;
+  table: string;
+  sheetPath: string;
+  sheetName: string;
+  sheetIndex: number;
+  startRow: number;
+  endRow: number;
+  blockHeight: number;
+  placeholders: SectionTablePlaceholder[];
+};
+
+type SheetEntry = {
+  name: string;
+  index: number;
+  relId: string;
+  path: string;
+};
 
 /**
  * XML特殊文字をエスケープ（W3C準拠）
  */
 function escapeXml(text: string): string {
   return text
-    .replace(/&/g, '&amp;')    // & を最初に処理（重要）
-    .replace(/</g, '&lt;')     // < を変換
-    .replace(/>/g, '&gt;')     // > を変換
-    .replace(/"/g, '&quot;')   // " を変換
-    .replace(/'/g, '&apos;');  // ' を変換
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * XMLエンティティをデコード
+ */
+function decodeXml(text: string): string {
+  return text
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
 }
 
 /**
@@ -38,34 +86,33 @@ function detectPlaceholdersInXml(xml: string): Array<{
 }> {
   const placeholderMap = new Map<string, { placeholder: string; key: string; count: number }>();
   const regex = /\{\{([^}]+)\}\}/g;
-  let match;
+  const sharedStrings = extractSharedStrings(xml);
 
-  while ((match = regex.exec(xml)) !== null) {
-    const placeholder = match[0];
-    const key = match[1];
+  sharedStrings.forEach((text) => {
+    regex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      const placeholder = match[0];
+      const key = match[1];
 
-    if (placeholderMap.has(placeholder)) {
-      placeholderMap.get(placeholder)!.count++;
-    } else {
-      placeholderMap.set(placeholder, {
-        placeholder: placeholder,
-        key: key,
-        count: 1
-      });
+      const existing = placeholderMap.get(placeholder);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        placeholderMap.set(placeholder, {
+          placeholder,
+          key,
+          count: 1,
+        });
+      }
     }
-  }
+  });
 
   return Array.from(placeholderMap.values());
 }
 
-type ArrayPlaceholder = {
-  placeholderKey: string; // 例: "#明細.番号"
-  arrayName: string;      // 例: "明細"
-  fieldPath: string;      // 例: "番号"
-};
-
-function parseArrayPlaceholderKey(key: string): ArrayPlaceholder | null {
-  if (!key.startsWith('#')) return null;
+function parseLegacyArrayPlaceholderKey(key: string): LegacyArrayPlaceholder | null {
+  if (!key.startsWith('#') || key.startsWith('##')) return null;
   const cleanName = key.substring(1);
   const parts = cleanName.split('.');
   if (parts.length < 2) return null;
@@ -76,36 +123,150 @@ function parseArrayPlaceholderKey(key: string): ArrayPlaceholder | null {
   };
 }
 
+function parseSectionTablePlaceholderKey(key: string): SectionTablePlaceholder | null {
+  if (!key.startsWith('##')) return null;
+  const cleanName = key.substring(2);
+  const parts = cleanName.split('.');
+  if (parts.length < 3) return null;
+  return {
+    placeholderKey: key,
+    section: parts[0],
+    table: parts[1],
+    cellPath: parts.slice(2).join('.'),
+  };
+}
+
 function extractSharedStrings(sharedStringsXml: string): string[] {
   const strings: string[] = [];
   const siRegex = /<si>(.*?)<\/si>/gs;
   let match: RegExpExecArray | null;
+
   while ((match = siRegex.exec(sharedStringsXml)) !== null) {
     const siContent = match[1];
-    const tMatch = siContent.match(/<t[^>]*>(.*?)<\/t>/s);
-    if (tMatch) strings.push(tMatch[1]);
+    const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+    const chunks: string[] = [];
+    let tMatch: RegExpExecArray | null;
+    while ((tMatch = tRegex.exec(siContent)) !== null) {
+      chunks.push(tMatch[1]);
+    }
+    if (chunks.length > 0) {
+      strings.push(chunks.join(''));
+    }
   }
+
   return strings;
 }
 
-function findCellsWithArrayPlaceholderIndices(
-  sheetXml: string,
-  arrayNameToIndices: Map<string, Set<number>>
-): Map<string, Set<number>> {
-  const result = new Map<string, Set<number>>();
-  const cellRegex = /<c r="([A-Z]+)(\d+)"[^>]*><v>(\d+)<\/v><\/c>/g;
-  let match: RegExpExecArray | null;
-  while ((match = cellRegex.exec(sheetXml)) !== null) {
-    const row = parseInt(match[2], 10);
-    const sharedStringIndex = parseInt(match[3], 10);
-    arrayNameToIndices.forEach((indices, arrayName) => {
-      if (indices.has(sharedStringIndex)) {
-        if (!result.has(arrayName)) result.set(arrayName, new Set());
-        result.get(arrayName)!.add(row);
-      }
-    });
+function extractSiText(siContent: string): string {
+  const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+  const chunks: string[] = [];
+  let tMatch: RegExpExecArray | null;
+  while ((tMatch = tRegex.exec(siContent)) !== null) {
+    chunks.push(tMatch[1]);
   }
-  return result;
+  return decodeXml(chunks.join(''));
+}
+
+function extractFirstRunProperties(siContent: string): string | null {
+  const firstRunMatch = siContent.match(/<r>([\s\S]*?)<\/r>/);
+  if (!firstRunMatch) return null;
+  const rPrMatch = firstRunMatch[1].match(/<rPr>[\s\S]*?<\/rPr>/);
+  return rPrMatch ? rPrMatch[0] : null;
+}
+
+function buildTextNode(text: string): string {
+  const escapedText = escapeXml(text);
+  const preserveSpace = /^\s|\s$/.test(text);
+  return preserveSpace
+    ? `<t xml:space="preserve">${escapedText}</t>`
+    : `<t>${escapedText}</t>`;
+}
+
+function formatDateValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}/${month}/${day}`;
+}
+
+function stringifyPrimitiveValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (value instanceof Date) return formatDateValue(value);
+  return String(value);
+}
+
+function replacePrimitivePlaceholdersWithFirstRunStyle(
+  sharedStringsXml: string,
+  replacements: Map<string, string>
+): string {
+  if (replacements.size === 0) return sharedStringsXml;
+
+  const siRegex = /<si>([\s\S]*?)<\/si>/g;
+  return sharedStringsXml.replace(siRegex, (siWhole: string, siContent: string) => {
+    const originalText = extractSiText(siContent);
+    if (!originalText.includes('{{')) return siWhole;
+
+    let replacedText = originalText;
+    replacements.forEach((value, key) => {
+      const tokenRegex = new RegExp(escapeRegExp(`{{${key}}}`), 'g');
+      replacedText = replacedText.replace(tokenRegex, value);
+    });
+
+    if (replacedText === originalText) return siWhole;
+
+    const firstRunProps = extractFirstRunProperties(siContent);
+    const textNode = buildTextNode(replacedText);
+
+    if (firstRunProps) {
+      return `<si><r>${firstRunProps}${textNode}</r></si>`;
+    }
+
+    return `<si>${textNode}</si>`;
+  });
+}
+
+function collectPlaceholderIndices(
+  sharedStrings: string[],
+  placeholderKeys: string[]
+): Map<string, Set<number>> {
+  const placeholderToIndices = new Map<string, Set<number>>();
+
+  placeholderKeys.forEach((key) => {
+    const token = `{{${key}}}`;
+    const indices = new Set<number>();
+
+    sharedStrings.forEach((str, idx) => {
+      if (str.includes(token)) indices.add(idx);
+    });
+
+    if (indices.size > 0) {
+      placeholderToIndices.set(key, indices);
+    }
+  });
+
+  return placeholderToIndices;
+}
+
+function findRowsBySharedStringIndices(sheetXml: string, indices: Set<number>): Set<number> {
+  const rows = new Set<number>();
+  if (indices.size === 0) return rows;
+
+  const cellRegex = /<c\b[^>]*\br="[A-Z]+(\d+)"[^>]*>([\s\S]*?)<\/c>/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = cellRegex.exec(sheetXml)) !== null) {
+    const row = Number(match[1]);
+    const cellBody = match[2];
+    const valueMatch = cellBody.match(/<v>(\d+)<\/v>/);
+    if (!valueMatch) continue;
+
+    const sharedStringIndex = Number(valueMatch[1]);
+    if (indices.has(sharedStringIndex)) {
+      rows.add(row);
+    }
+  }
+
+  return rows;
 }
 
 function extractRowXml(sheetXml: string, rowNumber: number): string | null {
@@ -120,6 +281,36 @@ function updateRowNumber(rowXml: string, newRowNumber: number): string {
   return updated;
 }
 
+function shiftA1ReferencesInFormula(formula: string, rowDelta: number): string {
+  if (rowDelta === 0) return formula;
+
+  const cellRefRegex = /((?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!)?(\$?)([A-Z]{1,3})(\$?)(\d+)/g;
+  return formula.replace(
+    cellRefRegex,
+    (_whole, sheetPrefix: string | undefined, colAbs: string, col: string, rowAbs: string, rowNum: string) => {
+      if (rowAbs === '$') {
+        return `${sheetPrefix || ''}${colAbs}${col}${rowAbs}${rowNum}`;
+      }
+
+      const shifted = Math.max(1, Number(rowNum) + rowDelta);
+      return `${sheetPrefix || ''}${colAbs}${col}${shifted}`;
+    }
+  );
+}
+
+function shiftFormulaRowsInRowXml(rowXml: string, rowDelta: number): string {
+  if (rowDelta === 0) return rowXml;
+  return rowXml.replace(/(<f\b[^>]*>)([\s\S]*?)(<\/f>)/g, (_whole, openTag: string, formula: string, closeTag: string) => {
+    return `${openTag}${shiftA1ReferencesInFormula(formula, rowDelta)}${closeTag}`;
+  });
+}
+
+function copyRowXmlWithShiftedFormulas(templateRowXml: string, sourceRowNumber: number, targetRowNumber: number): string {
+  const rowDelta = targetRowNumber - sourceRowNumber;
+  const renumbered = updateRowNumber(templateRowXml, targetRowNumber);
+  return shiftFormulaRowsInRowXml(renumbered, rowDelta);
+}
+
 function shiftRowsDown(sheetXml: string, fromRow: number, shiftAmount: number): string {
   const rowRegex = /<row[^>]*r="(\d+)"[^>]*>.*?<\/row>/gs;
   let result = sheetXml;
@@ -127,16 +318,18 @@ function shiftRowsDown(sheetXml: string, fromRow: number, shiftAmount: number): 
 
   let match: RegExpExecArray | null;
   while ((match = rowRegex.exec(sheetXml)) !== null) {
-    const rowNum = parseInt(match[1], 10);
-    if (rowNum >= fromRow) matches.push({ rowNum, xml: match[0] });
+    const rowNum = Number(match[1]);
+    if (rowNum >= fromRow) {
+      matches.push({ rowNum, xml: match[0] });
+    }
   }
 
   matches.sort((a, b) => b.rowNum - a.rowNum);
   matches.forEach(({ rowNum, xml }) => {
-    const newRowNum = rowNum + shiftAmount;
-    const updatedXml = updateRowNumber(xml, newRowNum);
+    const updatedXml = updateRowNumber(xml, rowNum + shiftAmount);
     result = result.replace(xml, updatedXml);
   });
+
   return result;
 }
 
@@ -147,38 +340,44 @@ function shiftMergeCellsDown(sheetXml: string, fromRow: number, shiftAmount: num
 
   const mergeCellsContent = mergeCellsMatch[1];
   const mergeCellRegex = /<mergeCell ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"\/>/g;
+  const updates: Array<{ oldRef: string; newRef: string; row: number }> = [];
   let match: RegExpExecArray | null;
-  const updates: Array<{ oldRef: string; newRef: string }> = [];
 
   while ((match = mergeCellRegex.exec(mergeCellsContent)) !== null) {
     const startCol = match[1];
-    const startRow = parseInt(match[2], 10);
+    const startRow = Number(match[2]);
     const endCol = match[3];
-    const endRow = parseInt(match[4], 10);
+    const endRow = Number(match[4]);
 
     if (startRow >= fromRow || endRow >= fromRow) {
       const newStartRow = startRow >= fromRow ? startRow + shiftAmount : startRow;
       const newEndRow = endRow >= fromRow ? endRow + shiftAmount : endRow;
-      const oldRef = `${startCol}${startRow}:${endCol}${endRow}`;
-      const newRef = `${startCol}${newStartRow}:${endCol}${newEndRow}`;
-      updates.push({ oldRef, newRef });
+      updates.push({
+        oldRef: `${startCol}${startRow}:${endCol}${endRow}`,
+        newRef: `${startCol}${newStartRow}:${endCol}${newEndRow}`,
+        row: startRow,
+      });
     }
   }
 
-  updates.sort((a, b) => {
-    const aRow = parseInt(a.oldRef.match(/\d+/)![0], 10);
-    const bRow = parseInt(b.oldRef.match(/\d+/)![0], 10);
-    return bRow - aRow;
-  });
-
+  updates.sort((a, b) => b.row - a.row);
   let result = sheetXml;
   updates.forEach(({ oldRef, newRef }) => {
     result = result.replace(`<mergeCell ref="${oldRef}"/>`, `<mergeCell ref="${newRef}"/>`);
   });
+
   return result;
 }
 
-function insertMergeCellsForNewRows(sheetXml: string, templateRow: number, newRows: number[]): string {
+function insertMergeCellsForTemplateBlock(
+  sheetXml: string,
+  templateStartRow: number,
+  templateEndRow: number,
+  blockHeight: number,
+  repeatCount: number
+): string {
+  if (repeatCount <= 0) return sheetXml;
+
   const mergeCellsRegex = /<mergeCells[^>]*>(.*?)<\/mergeCells>/s;
   const mergeCellsMatch = sheetXml.match(mergeCellsRegex);
   if (!mergeCellsMatch) return sheetXml;
@@ -186,51 +385,85 @@ function insertMergeCellsForNewRows(sheetXml: string, templateRow: number, newRo
   const mergeCellsContent = mergeCellsMatch[1];
   const mergeCellRegex = /<mergeCell ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"\/>/g;
   let match: RegExpExecArray | null;
-  const templateMergeCells: Array<{ startCol: string; endCol: string }> = [];
 
+  const templateMerges: Array<{ startCol: string; startRow: number; endCol: string; endRow: number }> = [];
   while ((match = mergeCellRegex.exec(mergeCellsContent)) !== null) {
-    const startCol = match[1];
-    const startRow = parseInt(match[2], 10);
-    const endCol = match[3];
-    const endRow = parseInt(match[4], 10);
-
-    if (startRow === templateRow && endRow === templateRow) {
-      templateMergeCells.push({ startCol, endCol });
+    const startRow = Number(match[2]);
+    const endRow = Number(match[4]);
+    if (startRow >= templateStartRow && endRow <= templateEndRow) {
+      templateMerges.push({
+        startCol: match[1],
+        startRow,
+        endCol: match[3],
+        endRow,
+      });
     }
   }
 
-  if (templateMergeCells.length === 0) return sheetXml;
+  if (templateMerges.length === 0) return sheetXml;
 
   const newMergeCells: string[] = [];
-  newRows.forEach(rowNumber => {
-    templateMergeCells.forEach(({ startCol, endCol }) => {
-      newMergeCells.push(`<mergeCell ref="${startCol}${rowNumber}:${endCol}${rowNumber}"/>`);
+  for (let repeat = 1; repeat <= repeatCount; repeat++) {
+    const delta = repeat * blockHeight;
+    templateMerges.forEach((m) => {
+      newMergeCells.push(
+        `<mergeCell ref="${m.startCol}${m.startRow + delta}:${m.endCol}${m.endRow + delta}"/>`
+      );
     });
-  });
+  }
 
-  const result = sheetXml.replace('</mergeCells>', newMergeCells.join('') + '</mergeCells>');
-  const countMatch = sheetXml.match(/<mergeCells count="(\d+)"/);
-  if (!countMatch) return result;
+  let result = sheetXml.replace('</mergeCells>', `${newMergeCells.join('')}</mergeCells>`);
 
-  const currentCount = parseInt(countMatch[1], 10);
-  const newCount = currentCount + newMergeCells.length;
-  return result.replace(/(<mergeCells count=")(\d+)(")/, `$1${newCount}$3`);
+  const countMatch = result.match(/<mergeCells count="(\d+)"/);
+  if (countMatch) {
+    const currentCount = Number(countMatch[1]);
+    result = result.replace(/(<mergeCells count=")(\d+)(")/, `$1${currentCount + newMergeCells.length}$3`);
+  }
+
+  return result;
 }
 
-function addSharedString(sharedStringsXml: string, newString: string) {
-  const escapedString = escapeXml(newString);
+function addSharedString(
+  sharedStringsXml: string,
+  newString: string,
+  firstRunProps?: string | null
+): { updatedXml: string; newIndex: number } {
   const countMatch = sharedStringsXml.match(/<sst[^>]*count="(\d+)"/);
   const uniqueCountMatch = sharedStringsXml.match(/<sst[^>]*uniqueCount="(\d+)"/);
-  const currentCount = countMatch ? parseInt(countMatch[1], 10) : 0;
-  const currentUniqueCount = uniqueCountMatch ? parseInt(uniqueCountMatch[1], 10) : 0;
+  const currentCount = countMatch ? Number(countMatch[1]) : 0;
+  const currentUniqueCount = uniqueCountMatch ? Number(uniqueCountMatch[1]) : 0;
   const newIndex = currentUniqueCount;
+  const textNode = buildTextNode(newString);
+  const siNode = firstRunProps
+    ? `<si><r>${firstRunProps}${textNode}</r></si>`
+    : `<si>${textNode}</si>`;
 
   let updatedXml = sharedStringsXml.replace(/count="\d+"/, `count="${currentCount + 1}"`);
   updatedXml = updatedXml.replace(/uniqueCount="\d+"/, `uniqueCount="${currentUniqueCount + 1}"`);
-  const newSi = `<si><t>${escapedString}</t></si>`;
-  updatedXml = updatedXml.replace('</sst>', `${newSi}</sst>`);
+  updatedXml = updatedXml.replace('</sst>', `${siNode}</sst>`);
 
   return { updatedXml, newIndex };
+}
+
+function collectFirstRunPropertiesBySharedStringIndex(
+  sharedStringsXml: string,
+  indices: Set<number>
+): Map<number, string | null> {
+  const result = new Map<number, string | null>();
+  if (indices.size === 0) return result;
+
+  const siRegex = /<si>([\s\S]*?)<\/si>/g;
+  let index = 0;
+  let match: RegExpExecArray | null;
+  while ((match = siRegex.exec(sharedStringsXml)) !== null) {
+    if (indices.has(index)) {
+      result.set(index, extractFirstRunProperties(match[1]));
+      if (result.size === indices.size) break;
+    }
+    index += 1;
+  }
+
+  return result;
 }
 
 function getPrintAreaFromWorkbookXml(workbookXml: string): string | null {
@@ -238,23 +471,29 @@ function getPrintAreaFromWorkbookXml(workbookXml: string): string | null {
   return m ? m[1] : null;
 }
 
-function parseFirstPrintArea(printAreaValue: string) {
+function parseFirstPrintArea(printAreaValue: string): {
+  sheetPrefix: string;
+  startCol: string;
+  startRow: number;
+  endCol: string;
+  endRow: number;
+} | null {
   const first = printAreaValue.split(',')[0];
   const bangIndex = first.indexOf('!');
   if (bangIndex === -1) return null;
 
-  const sheetPrefix = first.slice(0, bangIndex); // &apos;Sheet&apos;
-  const rangePart = first.slice(bangIndex + 1); // $A$1:$Q$40
+  const sheetPrefix = first.slice(0, bangIndex);
+  const rangePart = first.slice(bangIndex + 1);
 
-  const m = rangePart.match(/\$([A-Z]+)\$(\d+):\$([A-Z]+)\$(\d+)/);
+  const m = rangePart.match(/\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)/);
   if (!m) return null;
 
   return {
     sheetPrefix,
     startCol: m[1],
-    startRow: parseInt(m[2], 10),
+    startRow: Number(m[2]),
     endCol: m[3],
-    endRow: parseInt(m[4], 10),
+    endRow: Number(m[4]),
   };
 }
 
@@ -265,7 +504,7 @@ function buildPagedPrintAreas(params: {
   endCol: string;
   pageHeight: number;
   pages: number;
-}) {
+}): string {
   const ranges: string[] = [];
   for (let pageIndex = 0; pageIndex < params.pages; pageIndex++) {
     const pageStartRow = params.startRow + pageIndex * params.pageHeight;
@@ -275,233 +514,559 @@ function buildPagedPrintAreas(params: {
   return ranges.join(',');
 }
 
-function updatePrintAreaToPaged(workbookXml: string, pages: number): string {
-  const current = getPrintAreaFromWorkbookXml(workbookXml);
-  if (!current) return workbookXml;
+function normalizeSheetPrefix(prefix: string): string {
+  const decoded = decodeXml(prefix).trim();
+  if (decoded.startsWith("'") && decoded.endsWith("'")) {
+    return decoded.slice(1, -1);
+  }
+  return decoded;
+}
 
-  const first = parseFirstPrintArea(current);
-  if (!first) return workbookXml;
+function parseWorkbookSheets(workbookXml: string, workbookRelsXml: string): SheetEntry[] {
+  const sheetsMatch = workbookXml.match(/<sheets>([\s\S]*?)<\/sheets>/i);
+  if (!sheetsMatch) return [];
 
-  const pageHeight = first.endRow - first.startRow + 1;
-  if (pageHeight <= 0) return workbookXml;
+  const relationshipMap = new Map<string, string>();
+  const relRegex = /<Relationship\b([^>]*)\/>/g;
+  let relMatch: RegExpExecArray | null;
 
-  const newValue = buildPagedPrintAreas({
-    sheetPrefix: first.sheetPrefix,
-    startCol: first.startCol,
-    startRow: first.startRow,
-    endCol: first.endCol,
-    pageHeight,
-    pages,
-  });
+  while ((relMatch = relRegex.exec(workbookRelsXml)) !== null) {
+    const attrs = relMatch[1];
+    const idMatch = attrs.match(/\bId="([^"]+)"/);
+    const targetMatch = attrs.match(/\bTarget="([^"]+)"/);
+    if (!idMatch || !targetMatch) continue;
 
-  return workbookXml.replace(/(<definedName[^>]*name="_xlnm\.Print_Area"[^>]*>)([^<]*)(<\/definedName>)/g, (_m, p1, _p2, p3) => {
-    return `${p1}${newValue}${p3}`;
+    let target = targetMatch[1];
+    if (target.startsWith('/')) target = target.slice(1);
+    if (!target.startsWith('xl/')) target = `xl/${target.replace(/^\.?\/?/, '')}`;
+    relationshipMap.set(idMatch[1], target);
+  }
+
+  const sheetTags = sheetsMatch[1].match(/<sheet\b[^>]*\/>/g) || [];
+  return sheetTags.map((tag, index) => {
+    const nameMatch = tag.match(/\bname="([^"]*)"/);
+    const relIdMatch = tag.match(/\br:id="([^"]+)"/);
+    const relId = relIdMatch ? relIdMatch[1] : '';
+
+    return {
+      name: nameMatch ? decodeXml(nameMatch[1]) : `Sheet${index + 1}`,
+      index,
+      relId,
+      path: relationshipMap.get(relId) || '',
+    };
   });
 }
 
-export class PlaceholderReplacer {
-  private placeholderPattern = /\{\{([^}]+)\}\}/g;
+function updatePrintAreaForSheet(
+  workbookXml: string,
+  targetSheetName: string,
+  targetSheetIndex: number,
+  insertedRows: number
+): string {
+  if (insertedRows <= 0) return workbookXml;
 
+  return workbookXml.replace(
+    /(<definedName\b[^>]*name="_xlnm\.Print_Area"[^>]*>)([^<]*)(<\/definedName>)/g,
+    (full, openTag: string, value: string, closeTag: string) => {
+      const localSheetIdMatch = openTag.match(/\blocalSheetId="(\d+)"/);
+      const localSheetId = localSheetIdMatch ? Number(localSheetIdMatch[1]) : null;
+
+      const parsed = parseFirstPrintArea(value);
+      if (!parsed) return full;
+
+      const sheetNameFromValue = normalizeSheetPrefix(parsed.sheetPrefix);
+      const isTarget =
+        (localSheetId !== null && localSheetId === targetSheetIndex) ||
+        sheetNameFromValue === targetSheetName;
+
+      if (!isTarget) return full;
+
+      const baseRows = parsed.endRow - parsed.startRow + 1;
+      if (baseRows <= 0) return full;
+
+      const existingPages = Math.max(1, value.split(',').length);
+      const requiredPages = Math.ceil((baseRows + insertedRows) / baseRows);
+      const pages = Math.max(existingPages, requiredPages);
+
+      if (pages <= existingPages && existingPages > 1) {
+        return full;
+      }
+
+      const newValue = buildPagedPrintAreas({
+        sheetPrefix: parsed.sheetPrefix,
+        startCol: parsed.startCol,
+        startRow: parsed.startRow,
+        endCol: parsed.endCol,
+        pageHeight: baseRows,
+        pages,
+      });
+
+      return `${openTag}${newValue}${closeTag}`;
+    }
+  );
+}
+
+function getNestedValue(source: unknown, path: string): unknown {
+  if (!isPlainObject(source)) return undefined;
+
+  const parts = path.split('.');
+  let current: unknown = source;
+  for (const part of parts) {
+    if (!isPlainObject(current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function getTableData(data: PlaceholderData, section: string, table: string): Array<Record<string, unknown>> {
+  const sectionObj = data[section];
+  if (isPlainObject(sectionObj)) {
+    const nested = sectionObj[table];
+    if (Array.isArray(nested)) return nested.filter((v): v is Record<string, unknown> => isPlainObject(v));
+  }
+
+  const legacy = data[table];
+  if (Array.isArray(legacy)) {
+    return legacy.filter((v): v is Record<string, unknown> => isPlainObject(v));
+  }
+
+  return [];
+}
+
+function replaceSharedStringIndexInRow(
+  rowXml: string,
+  rowNumber: number,
+  oldIndex: number,
+  newIndex: number
+): string {
+  const regex = new RegExp(
+    `(<c r="[A-Z]+${rowNumber}"[^>]*>[\\s\\S]*?<v>)${oldIndex}(</v>[\\s\\S]*?<\\/c>)`,
+    'g'
+  );
+  return rowXml.replace(regex, `$1${newIndex}$2`);
+}
+
+function applyLegacyArrayExpansion(
+  zip: JSZip,
+  sharedStringsXml: string,
+  data: PlaceholderData,
+  placeholderInfo: Array<{ placeholder: string; key: string; count: number }>
+): Promise<{ sharedStringsXml: string; insertedRows: number }> {
+  const legacyArrayPlaceholders = placeholderInfo
+    .map((p) => parseLegacyArrayPlaceholderKey(p.key))
+    .filter((p): p is LegacyArrayPlaceholder => p !== null);
+
+  if (legacyArrayPlaceholders.length === 0) {
+    return Promise.resolve({ sharedStringsXml, insertedRows: 0 });
+  }
+
+  return (async () => {
+    const sheetFile = zip.file('xl/worksheets/sheet1.xml');
+    if (!sheetFile) {
+      throw new Error('sheet1.xmlが見つかりません（配列展開に必要）');
+    }
+
+    let sheetXml = await sheetFile.async('string');
+    const sharedStrings = extractSharedStrings(sharedStringsXml);
+    const placeholderToIndices = collectPlaceholderIndices(
+      sharedStrings,
+      legacyArrayPlaceholders.map((p) => p.placeholderKey)
+    );
+    const styleSourceIndices = new Set<number>();
+    placeholderToIndices.forEach((indices) => {
+      indices.forEach((idx) => styleSourceIndices.add(idx));
+    });
+    const firstRunPropsByIndex = collectFirstRunPropertiesBySharedStringIndex(sharedStringsXml, styleSourceIndices);
+
+    const arrayNameToIndices = new Map<string, Set<number>>();
+    legacyArrayPlaceholders.forEach((ph) => {
+      const indices = placeholderToIndices.get(ph.placeholderKey);
+      if (!indices || indices.size === 0) return;
+      const current = arrayNameToIndices.get(ph.arrayName) || new Set<number>();
+      indices.forEach((idx) => current.add(idx));
+      arrayNameToIndices.set(ph.arrayName, current);
+    });
+
+    const rowsByArrayName = new Map<string, Set<number>>();
+    arrayNameToIndices.forEach((indices, arrayName) => {
+      rowsByArrayName.set(arrayName, findRowsBySharedStringIndices(sheetXml, indices));
+    });
+
+    const firstArrayName = Array.from(rowsByArrayName.keys())[0];
+    const templateRows = Array.from(rowsByArrayName.get(firstArrayName) || []).sort((a, b) => a - b);
+    const arrayData = data[firstArrayName];
+
+    if (!Array.isArray(arrayData) || templateRows.length === 0) {
+      return { sharedStringsXml, insertedRows: 0 };
+    }
+
+    const normalizedData = arrayData.filter((item): item is Record<string, unknown> => isPlainObject(item));
+    const templateCapacity = templateRows.length;
+    const insertCount = Math.max(0, normalizedData.length - templateCapacity);
+
+    if (insertCount > 0) {
+      const lastTemplateRow = templateRows[templateRows.length - 1];
+      const insertStartRow = lastTemplateRow + 1;
+
+      sheetXml = shiftRowsDown(sheetXml, insertStartRow, insertCount);
+      sheetXml = shiftMergeCellsDown(sheetXml, insertStartRow, insertCount);
+
+      const templateRowXml = extractRowXml(sheetXml, lastTemplateRow);
+      if (!templateRowXml) {
+        throw new Error(`テンプレート行のXMLが取得できません: row=${lastTemplateRow}`);
+      }
+
+      const newRowsXml: string[] = [];
+      for (let i = 0; i < insertCount; i++) {
+        const targetRow = insertStartRow + i;
+        newRowsXml.push(copyRowXmlWithShiftedFormulas(templateRowXml, lastTemplateRow, targetRow));
+      }
+
+      const lastTemplateRowXml = extractRowXml(sheetXml, lastTemplateRow);
+      if (!lastTemplateRowXml) {
+        throw new Error(`テンプレート行のXMLが取得できません: row=${lastTemplateRow}`);
+      }
+
+      sheetXml = sheetXml.replace(lastTemplateRowXml, `${lastTemplateRowXml}${newRowsXml.join('')}`);
+      sheetXml = insertMergeCellsForTemplateBlock(sheetXml, lastTemplateRow, lastTemplateRow, 1, insertCount);
+    }
+
+    const totalRows = Math.max(normalizedData.length, templateCapacity);
+    for (let i = 0; i < totalRows; i++) {
+      const rowNumber = templateRows[0] + i;
+      const originalRowXml = extractRowXml(sheetXml, rowNumber);
+      if (!originalRowXml) continue;
+
+      let rowXml = originalRowXml;
+      legacyArrayPlaceholders.forEach((ph) => {
+        if (ph.arrayName !== firstArrayName) return;
+
+        const indices = placeholderToIndices.get(ph.placeholderKey);
+        if (!indices) return;
+
+        const item = i < normalizedData.length ? normalizedData[i] : {};
+        const rawValue = getNestedValue(item, ph.fieldPath);
+        const stringValue = stringifyPrimitiveValue(rawValue);
+
+        indices.forEach((oldIndex) => {
+          const added = addSharedString(sharedStringsXml, stringValue, firstRunPropsByIndex.get(oldIndex));
+          sharedStringsXml = added.updatedXml;
+          rowXml = replaceSharedStringIndexInRow(rowXml, rowNumber, oldIndex, added.newIndex);
+        });
+      });
+
+      sheetXml = sheetXml.replace(originalRowXml, rowXml);
+    }
+
+    zip.file('xl/worksheets/sheet1.xml', sheetXml);
+    return { sharedStringsXml, insertedRows: insertCount };
+  })();
+}
+
+export class PlaceholderReplacer {
   /**
    * Excelファイル（Buffer）内のプレースホルダーを置換
    * sharedStrings.xmlを直接編集することで印刷設定を保持しつつ、
-   * 配列プレースホルダーがある場合は明細行の増加に合わせて行挿入 + Print_Area 追加（test13方式）も行う
+   * 配列プレースホルダーの行追加とPrint_Area拡張を行う
    */
-  async replacePlaceholders(
-    excelBuffer: Buffer,
-    data: PlaceholderData
-  ): Promise<Buffer> {
-    // 1. ZIPとして読み込み
+  async replacePlaceholders(excelBuffer: Buffer, data: PlaceholderData): Promise<Buffer> {
     const zip = await JSZip.loadAsync(excelBuffer);
 
-    // 2. sharedStrings.xmlを取得（プレースホルダーはここにある）
     const sharedStringsFile = zip.file('xl/sharedStrings.xml');
     if (!sharedStringsFile) {
       throw new Error('sharedStrings.xmlが見つかりません');
     }
 
     let sharedStringsXml = await sharedStringsFile.async('string');
-
-    // ===== Stage A: 配列プレースホルダーがあれば、行挿入 + セル参照差し替え =====
     const placeholderInfo = detectPlaceholdersInXml(sharedStringsXml);
-    const arrayPlaceholders = placeholderInfo
-      .map(p => parseArrayPlaceholderKey(p.key))
-      .filter((p): p is ArrayPlaceholder => p !== null);
 
-    let insertCount = 0;
+    const legacyArrayPlaceholders = placeholderInfo
+      .map((p) => parseLegacyArrayPlaceholderKey(p.key))
+      .filter((p): p is LegacyArrayPlaceholder => p !== null);
 
-    if (arrayPlaceholders.length > 0) {
-      // 現状はテンプレート（請求書）想定で sheet1 を対象にする
-      const sheetFile = zip.file('xl/worksheets/sheet1.xml');
-      if (!sheetFile) throw new Error('sheet1.xmlが見つかりません（配列展開に必要）');
-      let sheetXml = await sheetFile.async('string');
+    const sectionTablePlaceholders = placeholderInfo
+      .map((p) => parseSectionTablePlaceholderKey(p.key))
+      .filter((p): p is SectionTablePlaceholder => p !== null);
 
-      // sharedStrings の index を特定（placeholderKey -> sharedStringIndex）
+    if (legacyArrayPlaceholders.length > 0 && sectionTablePlaceholders.length > 0) {
+      throw new Error('テンプレート内で旧配列記法（{{#...}}）と新記法（{{##section.table.cell}}）は混在できません');
+    }
+
+    let workbookXmlForPrintArea: string | null = null;
+    let sheetEntries: SheetEntry[] = [];
+
+    // Stage A-1: 新記法 ##section.table.cell
+    if (sectionTablePlaceholders.length > 0) {
+      const workbookFile = zip.file('xl/workbook.xml');
+      const workbookRelsFile = zip.file('xl/_rels/workbook.xml.rels');
+      if (!workbookFile || !workbookRelsFile) {
+        throw new Error('workbook.xml または workbook.xml.rels が見つかりません');
+      }
+
+      workbookXmlForPrintArea = await workbookFile.async('string');
+      const workbookRelsXml = await workbookRelsFile.async('string');
+      sheetEntries = parseWorkbookSheets(workbookXmlForPrintArea, workbookRelsXml).filter((s) => !!s.path);
+
       const sharedStrings = extractSharedStrings(sharedStringsXml);
-      const placeholderToIndex = new Map<string, number>();
-      const arrayNameToIndices = new Map<string, Set<number>>();
+      const placeholderToIndices = collectPlaceholderIndices(
+        sharedStrings,
+        sectionTablePlaceholders.map((p) => p.placeholderKey)
+      );
+      const styleSourceIndices = new Set<number>();
+      placeholderToIndices.forEach((indices) => {
+        indices.forEach((idx) => styleSourceIndices.add(idx));
+      });
+      const firstRunPropsByIndex = collectFirstRunPropertiesBySharedStringIndex(sharedStringsXml, styleSourceIndices);
 
-      arrayPlaceholders.forEach(ph => {
-        const placeholderToken = `{{${ph.placeholderKey}}}`;
-        sharedStrings.forEach((str, idx) => {
-          if (str.includes(placeholderToken)) {
-            placeholderToIndex.set(ph.placeholderKey, idx);
-            if (!arrayNameToIndices.has(ph.arrayName)) arrayNameToIndices.set(ph.arrayName, new Set());
-            arrayNameToIndices.get(ph.arrayName)!.add(idx);
-          }
-        });
+      type Group = {
+        section: string;
+        table: string;
+        placeholders: SectionTablePlaceholder[];
+        indexSet: Set<number>;
+      };
+
+      const groups = new Map<string, Group>();
+      sectionTablePlaceholders.forEach((ph) => {
+        const key = `${ph.section}.${ph.table}`;
+        const existing = groups.get(key);
+        if (existing) {
+          existing.placeholders.push(ph);
+        } else {
+          groups.set(key, {
+            section: ph.section,
+            table: ph.table,
+            placeholders: [ph],
+            indexSet: new Set<number>(),
+          });
+        }
+
+        const indices = placeholderToIndices.get(ph.placeholderKey);
+        if (indices) {
+          indices.forEach((idx) => groups.get(key)?.indexSet.add(idx));
+        }
       });
 
-      // テンプレート上の行位置を取得（配列ごと）
-      const arrayRows = findCellsWithArrayPlaceholderIndices(sheetXml, arrayNameToIndices);
-      const firstArrayName = Array.from(arrayRows.keys())[0];
-      const templateRowNumbers = Array.from(arrayRows.get(firstArrayName) || []).sort((a, b) => a - b);
+      const blocks: TableBlock[] = [];
+      for (const group of groups.values()) {
+        let foundBlock: TableBlock | null = null;
 
-      const arrayData = Array.isArray((data as Record<string, unknown>)[firstArrayName])
-        ? ((data as Record<string, unknown>)[firstArrayName] as Array<Record<string, unknown>>)
-        : null;
+        for (const sheetEntry of sheetEntries) {
+          const sheetFile = zip.file(sheetEntry.path);
+          if (!sheetFile) continue;
 
-      if (arrayData && templateRowNumbers.length > 0) {
-        const templateCapacity = templateRowNumbers.length;
-        insertCount = Math.max(0, arrayData.length - templateCapacity);
+          const sheetXml = await sheetFile.async('string');
+          const rows = Array.from(findRowsBySharedStringIndices(sheetXml, group.indexSet)).sort((a, b) => a - b);
+          if (rows.length === 0) continue;
 
-        if (insertCount > 0) {
-          const lastTemplateRow = templateRowNumbers[templateRowNumbers.length - 1];
-          const insertStartRow = lastTemplateRow + 1;
-
-          sheetXml = shiftRowsDown(sheetXml, insertStartRow, insertCount);
-          sheetXml = shiftMergeCellsDown(sheetXml, insertStartRow, insertCount);
-
-          const templateRowXml = extractRowXml(sheetXml, lastTemplateRow);
-          if (!templateRowXml) throw new Error(`テンプレート行のXMLが取得できません: row=${lastTemplateRow}`);
-
-          const newRowsXml: string[] = [];
-          for (let i = 0; i < insertCount; i++) {
-            const newRowNumber = insertStartRow + i;
-            newRowsXml.push(updateRowNumber(templateRowXml, newRowNumber));
+          const minRow = rows[0];
+          const maxRow = rows[rows.length - 1];
+          if (rows.length !== maxRow - minRow + 1) {
+            throw new Error(
+              `section=${group.section}, table=${group.table} の行塊は連続行で配置してください（sheet=${sheetEntry.name}）`
+            );
           }
 
-          const lastTemplateRowXml = extractRowXml(sheetXml, lastTemplateRow);
-          if (!lastTemplateRowXml) throw new Error(`テンプレート行のXMLが取得できません: row=${lastTemplateRow}`);
-          sheetXml = sheetXml.replace(lastTemplateRowXml, lastTemplateRowXml + newRowsXml.join(''));
+          if (foundBlock) {
+            throw new Error(`section=${group.section}, table=${group.table} のブロックが複数箇所に配置されています`);
+          }
 
-          const newRowNumbers = Array.from({ length: insertCount }, (_, i) => insertStartRow + i);
-          sheetXml = insertMergeCellsForNewRows(sheetXml, lastTemplateRow, newRowNumbers);
+          foundBlock = {
+            section: group.section,
+            table: group.table,
+            sheetPath: sheetEntry.path,
+            sheetName: sheetEntry.name,
+            sheetIndex: sheetEntry.index,
+            startRow: minRow,
+            endRow: maxRow,
+            blockHeight: maxRow - minRow + 1,
+            placeholders: group.placeholders,
+          };
         }
 
-        // 配列データをセルに反映（sharedStrings を追加して index を差し替える）
-        // データがテンプレート行数より少ない場合も、残りのテンプレート行は空文字に置換して
-        // プレースホルダーが表示されないようにする（#VALUE! の原因にもなる）
-        const totalRows = Math.max(arrayData.length, templateCapacity);
-        for (let i = 0; i < totalRows; i++) {
-          const rowNumber = templateRowNumbers[0] + i;
-          const originalRowXml = extractRowXml(sheetXml, rowNumber);
-          if (!originalRowXml) continue;
-          let rowXml = originalRowXml;
+        if (!foundBlock) {
+          throw new Error(`section=${group.section}, table=${group.table} のプレースホルダー配置を検出できませんでした`);
+        }
 
-          for (const ph of arrayPlaceholders) {
-            if (ph.arrayName !== firstArrayName) continue;
-            const oldIndex = placeholderToIndex.get(ph.placeholderKey);
-            if (oldIndex === undefined) continue;
+        blocks.push(foundBlock);
+      }
 
-            const item = i < arrayData.length ? (arrayData[i] || {}) : {};
-            const rawValue = (item as Record<string, unknown>)[ph.fieldPath];
-            const stringValue = rawValue === null || rawValue === undefined ? '' : String(rawValue);
+      // section重複禁止
+      const seenSection = new Set<string>();
+      blocks.forEach((block) => {
+        if (seenSection.has(block.section)) {
+          throw new Error(`section=${block.section} がテンプレート内で重複しています（sectionは一意にしてください）`);
+        }
+        seenSection.add(block.section);
+      });
 
-            const added = addSharedString(sharedStringsXml, stringValue);
-            sharedStringsXml = added.updatedXml;
+      for (const block of blocks) {
+        const sheetFile = zip.file(block.sheetPath);
+        if (!sheetFile) {
+          throw new Error(`対象シートが見つかりません: ${block.sheetPath}`);
+        }
 
-            const cellRegex = new RegExp(`<c r="[A-Z]+${rowNumber}"[^>]*><v>${oldIndex}</v><\\/c>`, 'g');
-            const updatedRowXml = rowXml.replace(cellRegex, (match) => {
-              return match.replace(`<v>${oldIndex}</v>`, `<v>${added.newIndex}</v>`);
+        let sheetXml = await sheetFile.async('string');
+        const tableData = getTableData(data, block.section, block.table);
+        const recordCount = tableData.length;
+
+        const repeatCount = Math.max(0, recordCount - 1);
+        const insertedRows = repeatCount * block.blockHeight;
+
+        if (insertedRows > 0) {
+          const insertStartRow = block.endRow + 1;
+
+          sheetXml = shiftRowsDown(sheetXml, insertStartRow, insertedRows);
+          sheetXml = shiftMergeCellsDown(sheetXml, insertStartRow, insertedRows);
+
+          const templateRowsXml: string[] = [];
+          for (let offset = 0; offset < block.blockHeight; offset++) {
+            const templateRowNumber = block.startRow + offset;
+            const rowXml = extractRowXml(sheetXml, templateRowNumber);
+            if (!rowXml) {
+              throw new Error(`テンプレート行のXMLが取得できません: row=${templateRowNumber}`);
+            }
+            templateRowsXml.push(rowXml);
+          }
+
+          const repeatedRowsXml: string[] = [];
+          for (let repeat = 1; repeat <= repeatCount; repeat++) {
+            for (let offset = 0; offset < block.blockHeight; offset++) {
+              const sourceRow = block.startRow + offset;
+              const targetRow = block.startRow + repeat * block.blockHeight + offset;
+              repeatedRowsXml.push(copyRowXmlWithShiftedFormulas(templateRowsXml[offset], sourceRow, targetRow));
+            }
+          }
+
+          const endRowXml = extractRowXml(sheetXml, block.endRow);
+          if (!endRowXml) {
+            throw new Error(`テンプレート行のXMLが取得できません: row=${block.endRow}`);
+          }
+
+          sheetXml = sheetXml.replace(endRowXml, `${endRowXml}${repeatedRowsXml.join('')}`);
+          sheetXml = insertMergeCellsForTemplateBlock(
+            sheetXml,
+            block.startRow,
+            block.endRow,
+            block.blockHeight,
+            repeatCount
+          );
+        }
+
+        const totalBlocks = Math.max(recordCount, 1);
+
+        for (let blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
+          const item = blockIndex < recordCount ? tableData[blockIndex] : {};
+
+          for (let offset = 0; offset < block.blockHeight; offset++) {
+            const rowNumber = block.startRow + blockIndex * block.blockHeight + offset;
+            const originalRowXml = extractRowXml(sheetXml, rowNumber);
+            if (!originalRowXml) continue;
+
+            let rowXml = originalRowXml;
+
+            block.placeholders.forEach((ph) => {
+              const rawValue = getNestedValue(item, ph.cellPath);
+              const stringValue = stringifyPrimitiveValue(rawValue);
+              const indices = placeholderToIndices.get(ph.placeholderKey);
+              if (!indices) return;
+
+              indices.forEach((oldIndex) => {
+                const added = addSharedString(sharedStringsXml, stringValue, firstRunPropsByIndex.get(oldIndex));
+                sharedStringsXml = added.updatedXml;
+                rowXml = replaceSharedStringIndexInRow(rowXml, rowNumber, oldIndex, added.newIndex);
+              });
             });
-            rowXml = updatedRowXml;
-          }
 
-          sheetXml = sheetXml.replace(originalRowXml, rowXml);
+            sheetXml = sheetXml.replace(originalRowXml, rowXml);
+          }
         }
 
-        zip.file('xl/worksheets/sheet1.xml', sheetXml);
+        zip.file(block.sheetPath, sheetXml);
+
+        if (insertedRows > 0 && workbookXmlForPrintArea) {
+          workbookXmlForPrintArea = updatePrintAreaForSheet(
+            workbookXmlForPrintArea,
+            block.sheetName,
+            block.sheetIndex,
+            insertedRows
+          );
+        }
       }
     }
 
-    // ===== Stage B: 通常プレースホルダー（sharedStrings の置換） =====
-    let replacedSharedStrings = sharedStringsXml;
+    // Stage A-2: 旧記法 #array.field
+    let legacyInsertedRows = 0;
+    if (sectionTablePlaceholders.length === 0 && legacyArrayPlaceholders.length > 0) {
+      const legacy = await applyLegacyArrayExpansion(zip, sharedStringsXml, data, placeholderInfo);
+      sharedStringsXml = legacy.sharedStringsXml;
+      legacyInsertedRows = legacy.insertedRows;
+    }
 
+    // Stage B: 通常プレースホルダー（先頭run書式を維持して sharedStrings を置換）
+    const primitiveReplacements = new Map<string, string>();
     Object.entries(data).forEach(([key, value]) => {
-      if (Array.isArray(value)) return;
-
-      const placeholder = `{{${key}}}`;
-
-      let stringValue: string;
-      if (value === null || value === undefined) {
-        stringValue = '';
-      } else if (value instanceof Date) {
-        stringValue = this.formatDate(value);
-      } else {
-        stringValue = String(value);
-      }
-
-      const escapedValue = escapeXml(stringValue);
-      const regex = new RegExp(escapeRegExp(placeholder), 'g');
-      replacedSharedStrings = replacedSharedStrings.replace(regex, escapedValue);
+      if (Array.isArray(value) || isPlainObject(value)) return;
+      primitiveReplacements.set(key, stringifyPrimitiveValue(value));
     });
 
-    // ===== Stage C: はみ出しがあれば Print_Area を追加（test13方式） =====
-    if (insertCount > 0) {
+    const replacedSharedStrings = replacePrimitivePlaceholdersWithFirstRunStyle(
+      sharedStringsXml,
+      primitiveReplacements
+    );
+
+    // Stage C: 旧記法でのPrint_Area更新（sheet1想定の既存互換）
+    if (legacyInsertedRows > 0 && !workbookXmlForPrintArea) {
       const workbookFile = zip.file('xl/workbook.xml');
       if (workbookFile) {
         const workbookXml = await workbookFile.async('string');
         const currentPrintArea = getPrintAreaFromWorkbookXml(workbookXml);
         const parsed = currentPrintArea ? parseFirstPrintArea(currentPrintArea) : null;
-        if (parsed) {
-          const baseEndRow = parsed.endRow;
-          const estimatedFinalEndRow = baseEndRow + insertCount;
-          const pageHeight = baseEndRow - parsed.startRow + 1;
-          const rowsNeeded = estimatedFinalEndRow - parsed.startRow + 1;
-          const pages = Math.ceil(rowsNeeded / pageHeight);
 
+        if (parsed) {
+          const baseRows = parsed.endRow - parsed.startRow + 1;
+          const pages = Math.ceil((baseRows + legacyInsertedRows) / baseRows);
           if (pages > 1) {
-            const updatedWorkbookXml = updatePrintAreaToPaged(workbookXml, pages);
+            const updatedWorkbookXml = workbookXml.replace(
+              /(<definedName[^>]*name="_xlnm\.Print_Area"[^>]*>)([^<]*)(<\/definedName>)/g,
+              (_m, p1, _p2, p3) => `${p1}${buildPagedPrintAreas({
+                sheetPrefix: parsed.sheetPrefix,
+                startCol: parsed.startCol,
+                startRow: parsed.startRow,
+                endCol: parsed.endCol,
+                pageHeight: baseRows,
+                pages,
+              })}${p3}`
+            );
             zip.file('xl/workbook.xml', updatedWorkbookXml);
           }
         }
       }
     }
 
-    // ZIPに書き戻し（sharedStrings）
+    if (workbookXmlForPrintArea) {
+      zip.file('xl/workbook.xml', workbookXmlForPrintArea);
+    }
+
     zip.file('xl/sharedStrings.xml', replacedSharedStrings);
 
-    // 5. Bufferとして返す
-    const outputBuffer = await zip.generateAsync({
+    return zip.generateAsync({
       type: 'nodebuffer',
       compression: 'DEFLATE',
-      compressionOptions: { level: 9 }
+      compressionOptions: { level: 9 },
     });
-
-    return outputBuffer;
   }
 
   /**
    * Excelファイル（Buffer）内のプレースホルダーを検出
    */
   async findPlaceholders(excelBuffer: Buffer): Promise<string[]> {
-    // 1. ZIPとして読み込み
     const zip = await JSZip.loadAsync(excelBuffer);
-
-    // 2. sharedStrings.xmlを取得
     const sharedStringsFile = zip.file('xl/sharedStrings.xml');
-    if (!sharedStringsFile) {
-      return [];
-    }
+    if (!sharedStringsFile) return [];
 
     const sharedStringsXml = await sharedStringsFile.async('string');
-
-    // 3. プレースホルダー検出
     const placeholders = detectPlaceholdersInXml(sharedStringsXml);
-
-    // 4. キーのみを返す（重複を除去してソート）
-    const keys = placeholders.map(p => p.key);
+    const keys = placeholders.map((p) => p.key);
     return Array.from(new Set(keys)).sort();
   }
 
@@ -513,28 +1078,12 @@ export class PlaceholderReplacer {
     key: string;
     count: number;
   }>> {
-    // 1. ZIPとして読み込み
     const zip = await JSZip.loadAsync(excelBuffer);
-
-    // 2. sharedStrings.xmlを取得
     const sharedStringsFile = zip.file('xl/sharedStrings.xml');
-    if (!sharedStringsFile) {
-      return [];
-    }
+    if (!sharedStringsFile) return [];
 
     const sharedStringsXml = await sharedStringsFile.async('string');
-
-    // 3. プレースホルダー検出
     return detectPlaceholdersInXml(sharedStringsXml);
   }
 
-  /**
-   * 日付をフォーマット（yyyy/MM/dd形式）
-   */
-  private formatDate(date: Date): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}/${month}/${day}`;
-  }
 }

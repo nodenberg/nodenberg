@@ -192,11 +192,7 @@ app.post('/template/sheets', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /template/upload
- * Upload template (store with optional JSON template generation)
- */
-app.post('/template/upload', async (req: Request, res: Response) => {
+async function handleTemplateValidate(req: Request, res: Response) {
   try {
     const { templateId, templateName, base64Data, generateJsonTemplate } = req.body;
 
@@ -224,8 +220,24 @@ app.post('/template/upload', async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    handleError(res, error, 'Failed to upload template');
+    handleError(res, error, 'Failed to validate template');
   }
+}
+
+/**
+ * POST /template/validate
+ * Validate template payload and optionally generate JSON template
+ */
+app.post('/template/validate', handleTemplateValidate);
+
+/**
+ * POST /template/upload (deprecated alias)
+ * Backward-compatible alias of /template/validate
+ */
+app.post('/template/upload', (req: Request, res: Response) => {
+  res.setHeader('Deprecation', 'true');
+  res.setHeader('Sunset', '2026-12-31');
+  return handleTemplateValidate(req, res);
 });
 
 // ===== Document Generation Endpoints =====
@@ -454,6 +466,7 @@ app.use((req: Request, res: Response) => {
       'POST /template/placeholders',
       'POST /template/info',
       'POST /template/sheets',
+      'POST /template/validate',
       'POST /template/upload',
       'POST /generate/excel',
       'POST /generate/excel/by-display-order',
@@ -481,6 +494,7 @@ app.listen(port, () => {
   console.log('  • POST /template/placeholders');
   console.log('  • POST /template/info');
   console.log('  • POST /template/sheets');
+  console.log('  • POST /template/validate');
   console.log('  • POST /template/upload');
   console.log('  • POST /generate/excel');
   console.log('  • POST /generate/excel/by-display-order');
