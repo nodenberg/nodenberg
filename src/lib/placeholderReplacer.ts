@@ -369,6 +369,28 @@ function shiftMergeCellsDown(sheetXml: string, fromRow: number, shiftAmount: num
   return result;
 }
 
+function shiftRowBreaksDown(sheetXml: string, fromRow: number, shiftAmount: number): string {
+  if (shiftAmount <= 0) return sheetXml;
+
+  return sheetXml.replace(/<rowBreaks\b([^>]*)>([\s\S]*?)<\/rowBreaks>/g, (_full, attrs: string, content: string) => {
+    const updatedContent = content.replace(
+      /<(brk|rowBreak)\b([^>]*)\/>/g,
+      (_tagFull, tagName: string, tagAttrs: string) => {
+        const idMatch = tagAttrs.match(/\bid="(\d+)"/);
+        if (!idMatch) return `<${tagName}${tagAttrs}/>`;
+
+        const id = Number(idMatch[1]);
+        if (id < fromRow) return `<${tagName}${tagAttrs}/>`;
+
+        const updatedAttrs = tagAttrs.replace(/\bid="\d+"/, `id="${id + shiftAmount}"`);
+        return `<${tagName}${updatedAttrs}/>`;
+      }
+    );
+
+    return `<rowBreaks${attrs}>${updatedContent}</rowBreaks>`;
+  });
+}
+
 function insertMergeCellsForTemplateBlock(
   sheetXml: string,
   templateStartRow: number,
@@ -497,21 +519,605 @@ function parseFirstPrintArea(printAreaValue: string): {
   };
 }
 
-function buildPagedPrintAreas(params: {
+type PrintAreaRange = {
   sheetPrefix: string;
   startCol: string;
   startRow: number;
   endCol: string;
-  pageHeight: number;
-  pages: number;
-}): string {
-  const ranges: string[] = [];
-  for (let pageIndex = 0; pageIndex < params.pages; pageIndex++) {
-    const pageStartRow = params.startRow + pageIndex * params.pageHeight;
-    const pageEndRow = pageStartRow + params.pageHeight - 1;
-    ranges.push(`${params.sheetPrefix}!$${params.startCol}$${pageStartRow}:$${params.endCol}$${pageEndRow}`);
+  endRow: number;
+};
+
+type CellStyleInfo = {
+  fontSize: number;
+  wrapText: boolean;
+};
+
+type StyleCatalog = {
+  styles: Map<number, CellStyleInfo>;
+  defaultFontSize: number;
+};
+
+type MergeSpan = {
+  startColIndex: number;
+  endColIndex: number;
+  startRow: number;
+  endRow: number;
+};
+
+type PageLayoutInfo = {
+  defaultRowHeight: number;
+  defaultColWidth: number;
+  pageHeightPoints: number;
+  pageWidthPoints: number;
+  printableHeightPoints: number;
+  printableWidthPoints: number;
+  effectiveScale: number;
+  pageHeightCapacityPoints: number;
+  columnWidthByIndex: Map<number, number>;
+};
+
+type PrintAreaTemplateInfo = {
+  firstRange: PrintAreaRange;
+  basePageHeight: number;
+  defaultRowHeight: number;
+  layoutInfo: PageLayoutInfo;
+};
+
+function parsePrintAreaRanges(printAreaValue: string): PrintAreaRange[] {
+  return printAreaValue
+    .split(',')
+    .map((part) => part.trim())
+    .map((part): PrintAreaRange | null => {
+      const bangIndex = part.indexOf('!');
+      if (bangIndex === -1) return null;
+
+      const sheetPrefix = part.slice(0, bangIndex);
+      const rangePart = part.slice(bangIndex + 1);
+      const m = rangePart.match(/\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)/);
+      if (!m) return null;
+
+      return {
+        sheetPrefix,
+        startCol: m[1],
+        startRow: Number(m[2]),
+        endCol: m[3],
+        endRow: Number(m[4]),
+      };
+    })
+    .filter((r): r is PrintAreaRange => r !== null);
+}
+
+function parseDefaultRowHeight(sheetXml: string): number {
+  const m = sheetXml.match(/<sheetFormatPr\b[^>]*\bdefaultRowHeight="([\d.]+)"/);
+  return m ? Number(m[1]) : 15;
+}
+
+function parseDefaultColWidth(sheetXml: string): number {
+  const m = sheetXml.match(/<sheetFormatPr\b[^>]*\bdefaultColWidth="([\d.]+)"/);
+  return m ? Number(m[1]) : 8.43;
+}
+
+function buildRowHeightMap(sheetXml: string): Map<number, number> {
+  const result = new Map<number, number>();
+  const rowRegex = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = rowRegex.exec(sheetXml)) !== null) {
+    const rowNumber = Number(match[1]);
+    const rowTag = match[0];
+    const htMatch = rowTag.match(/\bht="([\d.]+)"/);
+    if (!htMatch) continue;
+    result.set(rowNumber, Number(htMatch[1]));
   }
+
+  return result;
+}
+
+function getMaxRowNumber(sheetXml: string): number {
+  const rowRegex = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
+  let maxRow = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = rowRegex.exec(sheetXml)) !== null) {
+    maxRow = Math.max(maxRow, Number(match[1]));
+  }
+
+  return maxRow;
+}
+
+function buildExistingRowSet(sheetXml: string): Set<number> {
+  const rows = new Set<number>();
+  const rowRegex = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = rowRegex.exec(sheetXml)) !== null) {
+    rows.add(Number(match[1]));
+  }
+
+  return rows;
+}
+
+function parseColumnWidthMap(sheetXml: string): Map<number, number> {
+  const result = new Map<number, number>();
+  const colRegex = /<col\b([^>]*)\/>/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = colRegex.exec(sheetXml)) !== null) {
+    const attrs = match[1];
+    const minMatch = attrs.match(/\bmin="(\d+)"/);
+    const maxMatch = attrs.match(/\bmax="(\d+)"/);
+    const widthMatch = attrs.match(/\bwidth="([\d.]+)"/);
+    if (!minMatch || !maxMatch || !widthMatch) continue;
+
+    const min = Number(minMatch[1]);
+    const max = Number(maxMatch[1]);
+    const width = Number(widthMatch[1]);
+    for (let index = min; index <= max; index++) {
+      result.set(index, width);
+    }
+  }
+
+  return result;
+}
+
+function columnNameToIndex(columnName: string): number {
+  let index = 0;
+  for (const ch of columnName) {
+    index = index * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return index;
+}
+
+function columnWidthToPoints(width: number): number {
+  return width * 5.25;
+}
+
+function getColumnWidthPoints(
+  columnIndex: number,
+  columnWidthByIndex: Map<number, number>,
+  defaultColWidth: number
+): number {
+  return columnWidthToPoints(columnWidthByIndex.get(columnIndex) ?? defaultColWidth);
+}
+
+function getPaperSizePoints(paperSize: number | null): { width: number; height: number } {
+  switch (paperSize) {
+    case 1:
+      return { width: 612, height: 792 };
+    case 5:
+      return { width: 612, height: 1008 };
+    case 8:
+      return { width: 841.89, height: 1190.55 };
+    case 9:
+      return { width: 595.28, height: 841.89 };
+    default:
+      return { width: 595.28, height: 841.89 };
+  }
+}
+
+function parsePageLayoutInfo(sheetXml: string, range: PrintAreaRange): PageLayoutInfo {
+  const defaultRowHeight = parseDefaultRowHeight(sheetXml);
+  const defaultColWidth = parseDefaultColWidth(sheetXml);
+  const columnWidthByIndex = parseColumnWidthMap(sheetXml);
+  const pageSetupTag = sheetXml.match(/<pageSetup\b([^>]*)\/>/)?.[1] || '';
+  const pageMarginsTag = sheetXml.match(/<pageMargins\b([^>]*)\/>/)?.[1] || '';
+
+  const paperSize = pageSetupTag.match(/\bpaperSize="(\d+)"/)?.[1];
+  const orientation = pageSetupTag.match(/\borientation="([^"]+)"/)?.[1] || 'portrait';
+  const scaleAttr = pageSetupTag.match(/\bscale="([\d.]+)"/)?.[1];
+  const fitToWidthAttr = pageSetupTag.match(/\bfitToWidth="(\d+)"/)?.[1];
+  const fitToHeightAttr = pageSetupTag.match(/\bfitToHeight="(\d+)"/)?.[1];
+
+  const basePaper = getPaperSizePoints(paperSize ? Number(paperSize) : null);
+  const isLandscape = orientation === 'landscape';
+  const pageWidthPoints = isLandscape ? basePaper.height : basePaper.width;
+  const pageHeightPoints = isLandscape ? basePaper.width : basePaper.height;
+
+  const left = Number(pageMarginsTag.match(/\bleft="([\d.]+)"/)?.[1] || '0.7') * 72;
+  const right = Number(pageMarginsTag.match(/\bright="([\d.]+)"/)?.[1] || '0.7') * 72;
+  const top = Number(pageMarginsTag.match(/\btop="([\d.]+)"/)?.[1] || '0.75') * 72;
+  const bottom = Number(pageMarginsTag.match(/\bbottom="([\d.]+)"/)?.[1] || '0.75') * 72;
+  const header = Number(pageMarginsTag.match(/\bheader="([\d.]+)"/)?.[1] || '0.3') * 72;
+  const footer = Number(pageMarginsTag.match(/\bfooter="([\d.]+)"/)?.[1] || '0.3') * 72;
+
+  const printableWidthPoints = Math.max(1, pageWidthPoints - left - right);
+  const printableHeightPoints = Math.max(1, pageHeightPoints - top - bottom - header - footer);
+
+  const startColIndex = columnNameToIndex(range.startCol);
+  const endColIndex = columnNameToIndex(range.endCol);
+  let contentWidthPoints = 0;
+  for (let colIndex = startColIndex; colIndex <= endColIndex; colIndex++) {
+    contentWidthPoints += getColumnWidthPoints(colIndex, columnWidthByIndex, defaultColWidth);
+  }
+
+  const fitModeEnabled =
+    (fitToWidthAttr && Number(fitToWidthAttr) > 0) ||
+    (fitToHeightAttr && Number(fitToHeightAttr) > 0);
+
+  const explicitScale = scaleAttr ? Number(scaleAttr) / 100 : 1;
+  let effectiveScale = fitModeEnabled ? 1 : explicitScale > 0 ? explicitScale : 1;
+  if (fitToWidthAttr && Number(fitToWidthAttr) > 0 && contentWidthPoints > 0) {
+    const fitWidthScale = Math.min(1, printableWidthPoints / contentWidthPoints);
+    effectiveScale = fitWidthScale;
+  }
+
+  return {
+    defaultRowHeight,
+    defaultColWidth,
+    pageHeightPoints,
+    pageWidthPoints,
+    printableHeightPoints,
+    printableWidthPoints,
+    effectiveScale,
+    pageHeightCapacityPoints: printableHeightPoints / Math.max(effectiveScale, 0.01),
+    columnWidthByIndex,
+  };
+}
+
+function parseStyleCatalog(stylesXml: string): StyleCatalog {
+  const fontSizes: number[] = [];
+  const fontsBlock = stylesXml.match(/<fonts\b[^>]*>([\s\S]*?)<\/fonts>/);
+  if (fontsBlock) {
+    const fontRegex = /<font\b[^>]*>([\s\S]*?)<\/font>/g;
+    let fontMatch: RegExpExecArray | null;
+    while ((fontMatch = fontRegex.exec(fontsBlock[1])) !== null) {
+      const sizeMatch = fontMatch[1].match(/<sz\b[^>]*val="([\d.]+)"/);
+      fontSizes.push(sizeMatch ? Number(sizeMatch[1]) : 11);
+    }
+  }
+
+  const defaultFontSize = fontSizes[0] || 11;
+  const styles = new Map<number, CellStyleInfo>();
+  const cellXfsBlock = stylesXml.match(/<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/);
+  if (cellXfsBlock) {
+    const xfRegex = /<xf\b([^>]*?)(?:\/>|>([\s\S]*?)<\/xf>)/g;
+    let xfMatch: RegExpExecArray | null;
+    let styleIndex = 0;
+    while ((xfMatch = xfRegex.exec(cellXfsBlock[1])) !== null) {
+      const attrs = xfMatch[1];
+      const body = xfMatch[2] || '';
+      const fontId = Number(attrs.match(/\bfontId="(\d+)"/)?.[1] || '0');
+      const alignmentTag = body.match(/<alignment\b([^>]*)\/>/)?.[1] || '';
+      const wrapText = /\bwrapText="1"/.test(attrs) || /\bwrapText="1"/.test(alignmentTag);
+      styles.set(styleIndex, {
+        fontSize: fontSizes[fontId] || defaultFontSize,
+        wrapText,
+      });
+      styleIndex += 1;
+    }
+  }
+
+  return { styles, defaultFontSize };
+}
+
+function parseMergeSpans(sheetXml: string): MergeSpan[] {
+  const mergeSpans: MergeSpan[] = [];
+  const mergeCellRegex = /<mergeCell ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"\/>/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = mergeCellRegex.exec(sheetXml)) !== null) {
+    mergeSpans.push({
+      startColIndex: columnNameToIndex(match[1]),
+      endColIndex: columnNameToIndex(match[3]),
+      startRow: Number(match[2]),
+      endRow: Number(match[4]),
+    });
+  }
+
+  return mergeSpans;
+}
+
+function getMergedCellWidthPoints(
+  cellRef: string,
+  layoutInfo: PageLayoutInfo,
+  mergeSpans: MergeSpan[]
+): number {
+  const cellMatch = cellRef.match(/^([A-Z]+)(\d+)$/);
+  if (!cellMatch) return 0;
+
+  const colIndex = columnNameToIndex(cellMatch[1]);
+  const rowIndex = Number(cellMatch[2]);
+  const mergeSpan = mergeSpans.find((span) =>
+    span.startColIndex === colIndex &&
+    span.startRow === rowIndex
+  );
+
+  const start = mergeSpan ? mergeSpan.startColIndex : colIndex;
+  const end = mergeSpan ? mergeSpan.endColIndex : colIndex;
+  let widthPoints = 0;
+  for (let index = start; index <= end; index++) {
+    widthPoints += getColumnWidthPoints(index, layoutInfo.columnWidthByIndex, layoutInfo.defaultColWidth);
+  }
+  return widthPoints;
+}
+
+function estimateTextWidthPoints(text: string, fontSize: number): number {
+  let widthPoints = 0;
+  for (const ch of text) {
+    if (ch === '\n') continue;
+    if (/\s/.test(ch)) {
+      widthPoints += fontSize * 0.35;
+      continue;
+    }
+    if (/[\u0000-\u00ff]/.test(ch)) {
+      widthPoints += fontSize * 0.55;
+      continue;
+    }
+    widthPoints += fontSize;
+  }
+  return widthPoints;
+}
+
+function estimateWrappedTextHeight(text: string, fontSize: number, widthPoints: number, wrapText: boolean): number {
+  const paragraphs = text.split(/\r?\n/);
+  let lines = 0;
+
+  for (const paragraph of paragraphs) {
+    if (paragraph.length === 0) {
+      lines += 1;
+      continue;
+    }
+
+    if (!wrapText || widthPoints <= 0) {
+      lines += 1;
+      continue;
+    }
+
+    const paragraphWidth = estimateTextWidthPoints(paragraph, fontSize);
+    lines += Math.max(1, Math.ceil(paragraphWidth / widthPoints));
+  }
+
+  return Math.max(0, lines) * (fontSize * 1.25) + 4;
+}
+
+function getCellTextFromXml(cellXml: string, sharedStrings: string[]): string {
+  const typeMatch = cellXml.match(/\bt="([^"]+)"/);
+  const cellType = typeMatch ? typeMatch[1] : '';
+
+  if (cellType === 's') {
+    const valueMatch = cellXml.match(/<v>(\d+)<\/v>/);
+    if (!valueMatch) return '';
+    return sharedStrings[Number(valueMatch[1])] || '';
+  }
+
+  if (cellType === 'inlineStr') {
+    const inlineText = cellXml.match(/<t\b[^>]*>([\s\S]*?)<\/t>/);
+    return inlineText ? decodeXml(inlineText[1]) : '';
+  }
+
+  const valueMatch = cellXml.match(/<v>([\s\S]*?)<\/v>/);
+  return valueMatch ? decodeXml(valueMatch[1]) : '';
+}
+
+function estimateRowRenderedHeight(
+  rowXml: string,
+  sharedStrings: string[],
+  styleCatalog: StyleCatalog,
+  layoutInfo: PageLayoutInfo,
+  mergeSpans: MergeSpan[]
+): number {
+  const rowTagMatch = rowXml.match(/<row\b[^>]*>/);
+  const baseHeight = rowTagMatch?.[0].match(/\bht="([\d.]+)"/)?.[1];
+  let maxHeight = baseHeight ? Number(baseHeight) : layoutInfo.defaultRowHeight;
+
+  const cellRegex = /<c\b[^>]*\br="([A-Z]+\d+)"([^>]*)>([\s\S]*?)<\/c>/g;
+  let match: RegExpExecArray | null;
+  while ((match = cellRegex.exec(rowXml)) !== null) {
+    const cellRef = match[1];
+    const cellAttrs = match[2];
+    const cellBody = match[3];
+    const styleIndex = Number(cellAttrs.match(/\bs="(\d+)"/)?.[1] || '0');
+    const style = styleCatalog.styles.get(styleIndex) || {
+      fontSize: styleCatalog.defaultFontSize,
+      wrapText: false,
+    };
+    if (!style.wrapText) continue;
+    const text = getCellTextFromXml(`${match[0]}`, sharedStrings);
+    if (!text) continue;
+
+    const widthPoints = getMergedCellWidthPoints(cellRef, layoutInfo, mergeSpans);
+    const estimatedHeight = estimateWrappedTextHeight(text, style.fontSize, widthPoints, style.wrapText);
+    maxHeight = Math.max(maxHeight, estimatedHeight);
+  }
+
+  return maxHeight;
+}
+
+function buildEffectiveRowHeightMap(
+  sheetXml: string,
+  sharedStrings: string[],
+  styleCatalog: StyleCatalog,
+  layoutInfo: PageLayoutInfo
+): Map<number, number> {
+  const result = new Map<number, number>();
+  const rowRegex = /<row\b[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g;
+  const mergeSpans = parseMergeSpans(sheetXml);
+  let match: RegExpExecArray | null;
+
+  while ((match = rowRegex.exec(sheetXml)) !== null) {
+    const rowNumber = Number(match[1]);
+    result.set(
+      rowNumber,
+      estimateRowRenderedHeight(match[0], sharedStrings, styleCatalog, layoutInfo, mergeSpans)
+    );
+  }
+
+  return result;
+}
+
+function sumRowHeights(
+  startRow: number,
+  endRow: number,
+  rowHeights: Map<number, number>,
+  defaultRowHeight: number
+): number {
+  if (endRow < startRow) return 0;
+
+  let sum = 0;
+  for (let row = startRow; row <= endRow; row++) {
+    sum += rowHeights.get(row) ?? defaultRowHeight;
+  }
+  return sum;
+}
+
+function buildPrintAreasByHeight(params: {
+  sheetPrefix: string;
+  startCol: string;
+  startRow: number;
+  endCol: string;
+  contentEndRow: number;
+  basePageHeight: number;
+  rowHeights: Map<number, number>;
+  defaultRowHeight: number;
+  existingRows?: Set<number>;
+}): string {
+  if (params.contentEndRow < params.startRow) {
+    return `${params.sheetPrefix}!$${params.startCol}$${params.startRow}:$${params.endCol}$${params.startRow}`;
+  }
+
+  if (params.basePageHeight <= 0) {
+    return `${params.sheetPrefix}!$${params.startCol}$${params.startRow}:$${params.endCol}$${params.contentEndRow}`;
+  }
+
+  const ranges: string[] = [];
+  let currentStart = params.startRow;
+
+  while (currentStart <= params.contentEndRow) {
+    let currentHeight = 0;
+    let currentEnd = currentStart;
+
+    while (currentEnd <= params.contentEndRow) {
+      const rawRowHeight = params.rowHeights.get(currentEnd) ?? params.defaultRowHeight;
+      const rowHeight = rawRowHeight > 0 ? rawRowHeight : 1;
+      if (currentEnd > currentStart && currentHeight + rowHeight > params.basePageHeight) {
+        currentEnd -= 1;
+        break;
+      }
+      currentHeight += rowHeight;
+      currentEnd += 1;
+
+      if (currentHeight >= params.basePageHeight) {
+        currentEnd -= 1;
+        break;
+      }
+    }
+
+    if (currentEnd > params.contentEndRow) {
+      currentEnd = params.contentEndRow;
+    }
+
+    if (currentEnd < currentStart) {
+      currentEnd = currentStart;
+    }
+
+    if (params.existingRows && params.existingRows.size > 0) {
+      while (currentEnd < params.contentEndRow && !params.existingRows.has(currentEnd + 1)) {
+        currentEnd += 1;
+      }
+    }
+
+    ranges.push(`${params.sheetPrefix}!$${params.startCol}$${currentStart}:$${params.endCol}$${currentEnd}`);
+    currentStart = currentEnd + 1;
+  }
+
   return ranges.join(',');
+}
+
+function sumRowHeightsBeforeRow(
+  rowExclusive: number,
+  startRow: number,
+  rowHeights: Map<number, number>,
+  defaultRowHeight: number
+): number {
+  if (rowExclusive <= startRow) return 0;
+
+  let sum = 0;
+  for (let row = startRow; row < rowExclusive; row++) {
+    sum += rowHeights.get(row) ?? defaultRowHeight;
+  }
+  return sum;
+}
+
+function doesSectionOverflowPages(params: {
+  sectionStartRow: number;
+  sectionEndRow: number;
+  pageStartRow: number;
+  basePageHeight: number;
+  rowHeights: Map<number, number>;
+  defaultRowHeight: number;
+}): boolean {
+  if (params.sectionEndRow < params.sectionStartRow) return false;
+  if (params.basePageHeight <= 0) return false;
+
+  const startHeight = sumRowHeightsBeforeRow(
+    params.sectionStartRow,
+    params.pageStartRow,
+    params.rowHeights,
+    params.defaultRowHeight
+  );
+  const endHeightExclusive = sumRowHeightsBeforeRow(
+    params.sectionEndRow + 1,
+    params.pageStartRow,
+    params.rowHeights,
+    params.defaultRowHeight
+  );
+  const startPage = Math.floor(startHeight / params.basePageHeight);
+  const endPage = Math.floor(Math.max(0, endHeightExclusive - 0.000001) / params.basePageHeight);
+  return endPage > startPage;
+}
+
+function calculateBlankRowsToNextPageStart(params: {
+  nextSectionStartRow: number;
+  pageStartRow: number;
+  basePageHeight: number;
+  rowHeights: Map<number, number>;
+  defaultRowHeight: number;
+}): number {
+  if (params.basePageHeight <= 0 || params.defaultRowHeight <= 0) return 0;
+
+  const usedHeight = sumRowHeightsBeforeRow(
+    params.nextSectionStartRow,
+    params.pageStartRow,
+    params.rowHeights,
+    params.defaultRowHeight
+  );
+  const remainder = usedHeight % params.basePageHeight;
+  if (remainder === 0) return 0;
+
+  const remaining = params.basePageHeight - remainder;
+  return Math.max(1, Math.ceil(remaining / params.defaultRowHeight));
+}
+
+function getFirstPrintAreaForSheet(
+  workbookXml: string,
+  targetSheetName: string,
+  targetSheetIndex: number
+): PrintAreaRange | null {
+  const tags = workbookXml.match(/<definedName\b[\s\S]*?<\/definedName>/g) || [];
+  for (const tag of tags) {
+    if (!/name="_xlnm\.Print_Area"/.test(tag)) continue;
+
+    const openTagMatch = tag.match(/<definedName\b[^>]*>/);
+    const valueMatch = tag.match(/>([^<]*)<\/definedName>/);
+    if (!openTagMatch || !valueMatch) continue;
+
+    const openTag = openTagMatch[0];
+    const value = valueMatch[1];
+    const parsed = parseFirstPrintArea(value);
+    if (!parsed) continue;
+
+    const localSheetIdMatch = openTag.match(/\blocalSheetId="(\d+)"/);
+    const localSheetId = localSheetIdMatch ? Number(localSheetIdMatch[1]) : null;
+    const sheetNameFromValue = normalizeSheetPrefix(parsed.sheetPrefix);
+    const isTarget =
+      (localSheetId !== null && localSheetId === targetSheetIndex) ||
+      sheetNameFromValue === targetSheetName;
+
+    if (!isTarget) continue;
+    return parsed;
+  }
+
+  return null;
 }
 
 function normalizeSheetPrefix(prefix: string): string {
@@ -561,10 +1167,10 @@ function updatePrintAreaForSheet(
   workbookXml: string,
   targetSheetName: string,
   targetSheetIndex: number,
-  insertedRows: number
+  sheetXml: string,
+  sharedStrings: string[],
+  styleCatalog: StyleCatalog
 ): string {
-  if (insertedRows <= 0) return workbookXml;
-
   return workbookXml.replace(
     /(<definedName\b[^>]*name="_xlnm\.Print_Area"[^>]*>)([^<]*)(<\/definedName>)/g,
     (full, openTag: string, value: string, closeTag: string) => {
@@ -581,24 +1187,30 @@ function updatePrintAreaForSheet(
 
       if (!isTarget) return full;
 
-      const baseRows = parsed.endRow - parsed.startRow + 1;
-      if (baseRows <= 0) return full;
+      const parsedRanges = parsePrintAreaRanges(value);
+      if (parsedRanges.length === 0) return full;
 
-      const existingPages = Math.max(1, value.split(',').length);
-      const requiredPages = Math.ceil((baseRows + insertedRows) / baseRows);
-      const pages = Math.max(existingPages, requiredPages);
+      const firstRange = parsedRanges[0];
+      const contentEndRow = Math.max(getMaxRowNumber(sheetXml), firstRange.endRow);
+      const existingRows = buildExistingRowSet(sheetXml);
+      const layoutInfo = parsePageLayoutInfo(sheetXml, firstRange);
+      const rowHeights = buildEffectiveRowHeightMap(sheetXml, sharedStrings, styleCatalog, layoutInfo);
+      const basePageHeight = layoutInfo.pageHeightCapacityPoints;
 
-      if (pages <= existingPages && existingPages > 1) {
+      if (basePageHeight <= 0 || contentEndRow < firstRange.startRow) {
         return full;
       }
 
-      const newValue = buildPagedPrintAreas({
-        sheetPrefix: parsed.sheetPrefix,
-        startCol: parsed.startCol,
-        startRow: parsed.startRow,
-        endCol: parsed.endCol,
-        pageHeight: baseRows,
-        pages,
+      const newValue = buildPrintAreasByHeight({
+        sheetPrefix: firstRange.sheetPrefix,
+        startCol: firstRange.startCol,
+        startRow: firstRange.startRow,
+        endCol: firstRange.endCol,
+        contentEndRow,
+        basePageHeight,
+        rowHeights,
+        defaultRowHeight: layoutInfo.defaultRowHeight,
+        existingRows,
       });
 
       return `${openTag}${newValue}${closeTag}`;
@@ -644,6 +1256,103 @@ function replaceSharedStringIndexInRow(
     'g'
   );
   return rowXml.replace(regex, `$1${newIndex}$2`);
+}
+
+function renderRecordRowXml(params: {
+  rowXml: string;
+  rowNumber: number;
+  item: Record<string, unknown>;
+  placeholders: SectionTablePlaceholder[];
+  placeholderToIndices: Map<string, Set<number>>;
+  sharedStringsXml: string;
+  firstRunPropsByIndex: Map<number, string | null>;
+}): { rowXml: string; sharedStringsXml: string } {
+  let rowXml = params.rowXml;
+  let sharedStringsXml = params.sharedStringsXml;
+
+  params.placeholders.forEach((ph) => {
+    const rawValue = getNestedValue(params.item, ph.cellPath);
+    const stringValue = stringifyPrimitiveValue(rawValue);
+    const indices = params.placeholderToIndices.get(ph.placeholderKey);
+    if (!indices) return;
+
+    indices.forEach((oldIndex) => {
+      const added = addSharedString(sharedStringsXml, stringValue, params.firstRunPropsByIndex.get(oldIndex));
+      sharedStringsXml = added.updatedXml;
+      rowXml = replaceSharedStringIndexInRow(rowXml, params.rowNumber, oldIndex, added.newIndex);
+    });
+  });
+
+  return { rowXml, sharedStringsXml };
+}
+
+function renderRecordRowXmlForEstimate(params: {
+  rowXml: string;
+  rowNumber: number;
+  item: Record<string, unknown>;
+  placeholders: SectionTablePlaceholder[];
+  placeholderToIndices: Map<string, Set<number>>;
+  sharedStrings: string[];
+}): { rowXml: string; sharedStrings: string[] } {
+  let rowXml = params.rowXml;
+  const sharedStrings = [...params.sharedStrings];
+
+  params.placeholders.forEach((ph) => {
+    const rawValue = getNestedValue(params.item, ph.cellPath);
+    const stringValue = stringifyPrimitiveValue(rawValue);
+    const indices = params.placeholderToIndices.get(ph.placeholderKey);
+    if (!indices) return;
+
+    indices.forEach((oldIndex) => {
+      const newIndex = sharedStrings.length;
+      sharedStrings.push(stringValue);
+      rowXml = replaceSharedStringIndexInRow(rowXml, params.rowNumber, oldIndex, newIndex);
+    });
+  });
+
+  return { rowXml, sharedStrings };
+}
+
+function estimateRecordBlockHeight(params: {
+  sheetXml: string;
+  startRow: number;
+  blockHeight: number;
+  item: Record<string, unknown>;
+  placeholders: SectionTablePlaceholder[];
+  placeholderToIndices: Map<string, Set<number>>;
+  sharedStrings: string[];
+  styleCatalog: StyleCatalog;
+  layoutInfo: PageLayoutInfo;
+}): number {
+  const mergeSpans = parseMergeSpans(params.sheetXml);
+  let previewSharedStrings = [...params.sharedStrings];
+  let totalHeight = 0;
+
+  for (let offset = 0; offset < params.blockHeight; offset++) {
+    const rowNumber = params.startRow + offset;
+    const rowXml = extractRowXml(params.sheetXml, rowNumber);
+    if (!rowXml) continue;
+
+    const rendered = renderRecordRowXmlForEstimate({
+      rowXml,
+      rowNumber,
+      item: params.item,
+      placeholders: params.placeholders,
+      placeholderToIndices: params.placeholderToIndices,
+      sharedStrings: previewSharedStrings,
+    });
+
+    previewSharedStrings = rendered.sharedStrings;
+    totalHeight += estimateRowRenderedHeight(
+      rendered.rowXml,
+      previewSharedStrings,
+      params.styleCatalog,
+      params.layoutInfo,
+      mergeSpans
+    );
+  }
+
+  return totalHeight;
 }
 
 function applyLegacyArrayExpansion(
@@ -710,6 +1419,7 @@ function applyLegacyArrayExpansion(
 
       sheetXml = shiftRowsDown(sheetXml, insertStartRow, insertCount);
       sheetXml = shiftMergeCellsDown(sheetXml, insertStartRow, insertCount);
+      sheetXml = shiftRowBreaksDown(sheetXml, insertStartRow, insertCount);
 
       const templateRowXml = extractRowXml(sheetXml, lastTemplateRow);
       if (!templateRowXml) {
@@ -776,8 +1486,12 @@ export class PlaceholderReplacer {
     if (!sharedStringsFile) {
       throw new Error('sharedStrings.xmlが見つかりません');
     }
+    const stylesFile = zip.file('xl/styles.xml');
 
     let sharedStringsXml = await sharedStringsFile.async('string');
+    const styleCatalog = stylesFile
+      ? parseStyleCatalog(await stylesFile.async('string'))
+      : { styles: new Map<number, CellStyleInfo>(), defaultFontSize: 11 };
     const placeholderInfo = detectPlaceholdersInXml(sharedStringsXml);
 
     const legacyArrayPlaceholders = placeholderInfo
@@ -804,6 +1518,7 @@ export class PlaceholderReplacer {
       }
 
       workbookXmlForPrintArea = await workbookFile.async('string');
+      const templateWorkbookXmlForPrintArea = workbookXmlForPrintArea;
       const workbookRelsXml = await workbookRelsFile.async('string');
       sheetEntries = parseWorkbookSheets(workbookXmlForPrintArea, workbookRelsXml).filter((s) => !!s.path);
 
@@ -847,6 +1562,7 @@ export class PlaceholderReplacer {
       });
 
       const blocks: TableBlock[] = [];
+      const templateSheetXmlByPath = new Map<string, string>();
       for (const group of groups.values()) {
         let foundBlock: TableBlock | null = null;
 
@@ -855,6 +1571,9 @@ export class PlaceholderReplacer {
           if (!sheetFile) continue;
 
           const sheetXml = await sheetFile.async('string');
+          if (!templateSheetXmlByPath.has(sheetEntry.path)) {
+            templateSheetXmlByPath.set(sheetEntry.path, sheetXml);
+          }
           const rows = Array.from(findRowsBySharedStringIndices(sheetXml, group.indexSet)).sort((a, b) => a - b);
           if (rows.length === 0) continue;
 
@@ -899,6 +1618,43 @@ export class PlaceholderReplacer {
         seenSection.add(block.section);
       });
 
+      blocks.sort((a, b) => {
+        if (a.sheetIndex !== b.sheetIndex) return a.sheetIndex - b.sheetIndex;
+        return a.startRow - b.startRow;
+      });
+
+      const printAreaTemplateInfoBySheetPath = new Map<string, PrintAreaTemplateInfo>();
+      for (const block of blocks) {
+        if (printAreaTemplateInfoBySheetPath.has(block.sheetPath)) continue;
+
+        const templateSheetXml = templateSheetXmlByPath.get(block.sheetPath);
+        if (!templateSheetXml) continue;
+
+        const firstRange = getFirstPrintAreaForSheet(
+          templateWorkbookXmlForPrintArea,
+          block.sheetName,
+          block.sheetIndex
+        );
+        if (!firstRange) continue;
+
+        const layoutInfo = parsePageLayoutInfo(templateSheetXml, firstRange);
+        const defaultRowHeight = layoutInfo.defaultRowHeight;
+        const basePageHeight = layoutInfo.pageHeightCapacityPoints;
+
+        if (basePageHeight <= 0) continue;
+
+        printAreaTemplateInfoBySheetPath.set(block.sheetPath, {
+          firstRange,
+          basePageHeight,
+          defaultRowHeight,
+          layoutInfo,
+        });
+      }
+
+      const sheetOffsetByPath = new Map<string, number>();
+      const prevSectionSpanBySheetPath = new Map<string, { startRow: number; endRow: number }>();
+      const pageUsedHeightBySheetPath = new Map<string, number>();
+
       for (const block of blocks) {
         const sheetFile = zip.file(block.sheetPath);
         if (!sheetFile) {
@@ -909,18 +1665,75 @@ export class PlaceholderReplacer {
         const tableData = getTableData(data, block.section, block.table);
         const recordCount = tableData.length;
 
+        let totalInsertedRowsForPrintArea = 0;
+        const currentOffset = sheetOffsetByPath.get(block.sheetPath) || 0;
+        let currentStartRow = block.startRow + currentOffset;
+        let currentEndRow = block.endRow + currentOffset;
+        const templateInfo = printAreaTemplateInfoBySheetPath.get(block.sheetPath);
+        let currentSharedStrings = extractSharedStrings(sharedStringsXml);
+        let currentRowHeights = templateInfo
+          ? buildEffectiveRowHeightMap(sheetXml, currentSharedStrings, styleCatalog, templateInfo.layoutInfo)
+          : buildRowHeightMap(sheetXml);
+        let currentPageUsedHeight = templateInfo
+          ? pageUsedHeightBySheetPath.get(block.sheetPath) ??
+            sumRowHeights(
+              templateInfo.firstRange.startRow,
+              currentStartRow - 1,
+              currentRowHeights,
+              templateInfo.defaultRowHeight
+            )
+          : 0;
+        const prevSectionSpan = prevSectionSpanBySheetPath.get(block.sheetPath);
+        if (templateInfo && prevSectionSpan) {
+          const sectionOverflowed = doesSectionOverflowPages({
+            sectionStartRow: prevSectionSpan.startRow,
+            sectionEndRow: prevSectionSpan.endRow,
+            pageStartRow: templateInfo.firstRange.startRow,
+            basePageHeight: templateInfo.basePageHeight,
+            rowHeights: currentRowHeights,
+            defaultRowHeight: templateInfo.defaultRowHeight,
+          });
+
+          if (sectionOverflowed) {
+            const blankRows = calculateBlankRowsToNextPageStart({
+              nextSectionStartRow: currentStartRow,
+              pageStartRow: templateInfo.firstRange.startRow,
+              basePageHeight: templateInfo.basePageHeight,
+              rowHeights: currentRowHeights,
+              defaultRowHeight: templateInfo.defaultRowHeight,
+            });
+
+            if (blankRows > 0) {
+              sheetXml = shiftRowsDown(sheetXml, currentStartRow, blankRows);
+              sheetXml = shiftMergeCellsDown(sheetXml, currentStartRow, blankRows);
+              sheetXml = shiftRowBreaksDown(sheetXml, currentStartRow, blankRows);
+              currentRowHeights = buildEffectiveRowHeightMap(
+                sheetXml,
+                currentSharedStrings,
+                styleCatalog,
+                templateInfo.layoutInfo
+              );
+              currentPageUsedHeight = 0;
+              currentStartRow += blankRows;
+              currentEndRow += blankRows;
+              totalInsertedRowsForPrintArea += blankRows;
+            }
+          }
+        }
+
         const repeatCount = Math.max(0, recordCount - 1);
         const insertedRows = repeatCount * block.blockHeight;
 
         if (insertedRows > 0) {
-          const insertStartRow = block.endRow + 1;
+          const insertStartRow = currentEndRow + 1;
 
           sheetXml = shiftRowsDown(sheetXml, insertStartRow, insertedRows);
           sheetXml = shiftMergeCellsDown(sheetXml, insertStartRow, insertedRows);
+          sheetXml = shiftRowBreaksDown(sheetXml, insertStartRow, insertedRows);
 
           const templateRowsXml: string[] = [];
           for (let offset = 0; offset < block.blockHeight; offset++) {
-            const templateRowNumber = block.startRow + offset;
+            const templateRowNumber = currentStartRow + offset;
             const rowXml = extractRowXml(sheetXml, templateRowNumber);
             if (!rowXml) {
               throw new Error(`テンプレート行のXMLが取得できません: row=${templateRowNumber}`);
@@ -931,64 +1744,136 @@ export class PlaceholderReplacer {
           const repeatedRowsXml: string[] = [];
           for (let repeat = 1; repeat <= repeatCount; repeat++) {
             for (let offset = 0; offset < block.blockHeight; offset++) {
-              const sourceRow = block.startRow + offset;
-              const targetRow = block.startRow + repeat * block.blockHeight + offset;
+              const sourceRow = currentStartRow + offset;
+              const targetRow = currentStartRow + repeat * block.blockHeight + offset;
               repeatedRowsXml.push(copyRowXmlWithShiftedFormulas(templateRowsXml[offset], sourceRow, targetRow));
             }
           }
 
-          const endRowXml = extractRowXml(sheetXml, block.endRow);
+          const endRowXml = extractRowXml(sheetXml, currentEndRow);
           if (!endRowXml) {
-            throw new Error(`テンプレート行のXMLが取得できません: row=${block.endRow}`);
+            throw new Error(`テンプレート行のXMLが取得できません: row=${currentEndRow}`);
           }
 
           sheetXml = sheetXml.replace(endRowXml, `${endRowXml}${repeatedRowsXml.join('')}`);
           sheetXml = insertMergeCellsForTemplateBlock(
             sheetXml,
-            block.startRow,
-            block.endRow,
+            currentStartRow,
+            currentEndRow,
             block.blockHeight,
             repeatCount
           );
+          totalInsertedRowsForPrintArea += insertedRows;
+          currentRowHeights = templateInfo
+            ? buildEffectiveRowHeightMap(sheetXml, currentSharedStrings, styleCatalog, templateInfo.layoutInfo)
+            : buildRowHeightMap(sheetXml);
         }
 
         const totalBlocks = Math.max(recordCount, 1);
+        let currentRecordStartRow = currentStartRow;
+        let pageBreakInsertedRowsInBlock = 0;
 
         for (let blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
+          if (blockIndex > 0 && templateInfo) {
+            const itemForEstimate = blockIndex < recordCount ? tableData[blockIndex] : {};
+            const estimatedRecordHeight = estimateRecordBlockHeight({
+              sheetXml,
+              startRow: currentRecordStartRow,
+              blockHeight: block.blockHeight,
+              item: itemForEstimate,
+              placeholders: block.placeholders,
+              placeholderToIndices,
+              sharedStrings: currentSharedStrings,
+              styleCatalog,
+              layoutInfo: templateInfo.layoutInfo,
+            });
+            const currentRecordWouldOverflow =
+              currentPageUsedHeight > 0 &&
+              currentPageUsedHeight + estimatedRecordHeight > templateInfo.basePageHeight + 0.000001;
+
+            if (currentRecordWouldOverflow) {
+              const remainingHeight = templateInfo.basePageHeight - currentPageUsedHeight;
+              const blankRows = Math.max(1, Math.ceil(remainingHeight / templateInfo.defaultRowHeight));
+
+              if (blankRows > 0) {
+                sheetXml = shiftRowsDown(sheetXml, currentRecordStartRow, blankRows);
+                sheetXml = shiftMergeCellsDown(sheetXml, currentRecordStartRow, blankRows);
+                sheetXml = shiftRowBreaksDown(sheetXml, currentRecordStartRow, blankRows);
+                currentRowHeights = buildEffectiveRowHeightMap(
+                  sheetXml,
+                  currentSharedStrings,
+                  styleCatalog,
+                  templateInfo.layoutInfo
+                );
+                currentPageUsedHeight = 0;
+                currentRecordStartRow += blankRows;
+                totalInsertedRowsForPrintArea += blankRows;
+                pageBreakInsertedRowsInBlock += blankRows;
+              }
+            }
+          }
+
           const item = blockIndex < recordCount ? tableData[blockIndex] : {};
 
           for (let offset = 0; offset < block.blockHeight; offset++) {
-            const rowNumber = block.startRow + blockIndex * block.blockHeight + offset;
+            const rowNumber = currentRecordStartRow + offset;
             const originalRowXml = extractRowXml(sheetXml, rowNumber);
             if (!originalRowXml) continue;
 
-            let rowXml = originalRowXml;
-
-            block.placeholders.forEach((ph) => {
-              const rawValue = getNestedValue(item, ph.cellPath);
-              const stringValue = stringifyPrimitiveValue(rawValue);
-              const indices = placeholderToIndices.get(ph.placeholderKey);
-              if (!indices) return;
-
-              indices.forEach((oldIndex) => {
-                const added = addSharedString(sharedStringsXml, stringValue, firstRunPropsByIndex.get(oldIndex));
-                sharedStringsXml = added.updatedXml;
-                rowXml = replaceSharedStringIndexInRow(rowXml, rowNumber, oldIndex, added.newIndex);
-              });
+            const rendered = renderRecordRowXml({
+              rowXml: originalRowXml,
+              rowNumber,
+              item,
+              placeholders: block.placeholders,
+              placeholderToIndices,
+              sharedStringsXml,
+              firstRunPropsByIndex,
             });
 
-            sheetXml = sheetXml.replace(originalRowXml, rowXml);
+            sharedStringsXml = rendered.sharedStringsXml;
+            sheetXml = sheetXml.replace(originalRowXml, rendered.rowXml);
           }
+
+          if (templateInfo) {
+            currentSharedStrings = extractSharedStrings(sharedStringsXml);
+            currentRowHeights = buildEffectiveRowHeightMap(
+              sheetXml,
+              currentSharedStrings,
+              styleCatalog,
+              templateInfo.layoutInfo
+            );
+            currentPageUsedHeight += sumRowHeights(
+              currentRecordStartRow,
+              currentRecordStartRow + block.blockHeight - 1,
+              currentRowHeights,
+              templateInfo.defaultRowHeight
+            );
+          }
+
+          currentRecordStartRow += block.blockHeight;
+        }
+
+        const finalEndRow = currentEndRow + insertedRows + pageBreakInsertedRowsInBlock;
+        const newOffset = currentOffset + totalInsertedRowsForPrintArea;
+        sheetOffsetByPath.set(block.sheetPath, newOffset);
+        prevSectionSpanBySheetPath.set(block.sheetPath, {
+          startRow: currentStartRow,
+          endRow: finalEndRow,
+        });
+        if (templateInfo) {
+          pageUsedHeightBySheetPath.set(block.sheetPath, currentPageUsedHeight);
         }
 
         zip.file(block.sheetPath, sheetXml);
 
-        if (insertedRows > 0 && workbookXmlForPrintArea) {
+        if (workbookXmlForPrintArea) {
           workbookXmlForPrintArea = updatePrintAreaForSheet(
             workbookXmlForPrintArea,
             block.sheetName,
             block.sheetIndex,
-            insertedRows
+            sheetXml,
+            extractSharedStrings(sharedStringsXml),
+            styleCatalog
           );
         }
       }
@@ -1023,19 +1908,18 @@ export class PlaceholderReplacer {
         const parsed = currentPrintArea ? parseFirstPrintArea(currentPrintArea) : null;
 
         if (parsed) {
-          const baseRows = parsed.endRow - parsed.startRow + 1;
-          const pages = Math.ceil((baseRows + legacyInsertedRows) / baseRows);
-          if (pages > 1) {
-            const updatedWorkbookXml = workbookXml.replace(
-              /(<definedName[^>]*name="_xlnm\.Print_Area"[^>]*>)([^<]*)(<\/definedName>)/g,
-              (_m, p1, _p2, p3) => `${p1}${buildPagedPrintAreas({
-                sheetPrefix: parsed.sheetPrefix,
-                startCol: parsed.startCol,
-                startRow: parsed.startRow,
-                endCol: parsed.endCol,
-                pageHeight: baseRows,
-                pages,
-              })}${p3}`
+          const sheet1File = zip.file('xl/worksheets/sheet1.xml');
+          const sheet1Xml = sheet1File ? await sheet1File.async('string') : null;
+          if (sheet1Xml) {
+            const firstSheetNameMatch = workbookXml.match(/<sheet\b[^>]*name="([^"]*)"/);
+            const firstSheetName = firstSheetNameMatch ? decodeXml(firstSheetNameMatch[1]) : '';
+            const updatedWorkbookXml = updatePrintAreaForSheet(
+              workbookXml,
+              firstSheetName,
+              0,
+              sheet1Xml,
+              extractSharedStrings(sharedStringsXml),
+              styleCatalog
             );
             zip.file('xl/workbook.xml', updatedWorkbookXml);
           }

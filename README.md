@@ -2,11 +2,10 @@
 
 Node.js-based Excel report generation system with print settings preservation.
 
-- Base placeholder replacement: **test9 method** (edits `xl/sharedStrings.xml`)
-- Table (array) expansion + multi-page print area: **test13-like behavior**
-  - Legacy `{{#array.field}}` and new `{{##section.table.cell}}` placeholders are supported
-  - New section-table mode detects target sheet dynamically and expands multi-row record blocks
-  - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
+- Standard placeholders are replaced by editing `xl/sharedStrings.xml` directly, which preserves template print settings.
+- Table expansion supports both legacy `{{#array.field}}` and section-table `{{##section.table.cell}}`.
+- Section-table mode detects the target sheet automatically, duplicates multi-row record blocks, and recalculates `Print_Area` for Excel/PDF output.
+- For PDF generation through LibreOffice, page breaks are adjusted from template page settings, row heights, and section-table record boundaries.
 
 ## Features
 
@@ -41,7 +40,7 @@ docker compose ps
 
 The application will be available at `http://localhost:3200`.
 
-**詳細なDockerの使用方法は [DOCKER.md](DOCKER.md) を参照してください。**
+**詳細なDockerの使用方法は [docs/DOCKER.md](docs/DOCKER.md) を参照してください。**
 
 ### Manual Docker Setup
 
@@ -79,7 +78,7 @@ npm run dev
 - **POST /generate/excel** - Generate Excel file (supports table expansion)
 - **POST /generate/pdf** - Generate PDF file (requires LibreOffice)
 
-See `03_docker-version/docs/API.md` for request/response examples.
+See [docs/API.md](docs/API.md) for request/response examples.
 
 ### Build for Production
 
@@ -153,17 +152,18 @@ npm start
 
 ## Architecture
 
-### test9 Method - Print Settings Preservation
+### Shared-String Based Generation
 
-This application uses the **test9 method** for Excel generation, which:
+This application generates Excel files by editing the XML inside `.xlsx` files directly:
 
 1. **Reads Excel as ZIP**: .xlsx files are ZIP archives containing XML files
-2. **Edits sharedStrings.xml directly**: Placeholders are stored in `xl/sharedStrings.xml`
+2. **Edits `sharedStrings.xml` directly**: Placeholders are stored in `xl/sharedStrings.xml`
 3. **Preserves print settings**:
    - For normal placeholders: worksheet XML is not modified
    - For table expansion:
      - Legacy `{{#...}}`: `sheet1.xml` and `workbook.xml` may be updated
      - Section-table `{{##section.table.cell}}`: target worksheet XML and `workbook.xml` may be updated
+     - Section-table output recalculates page boundaries from print settings and record layout before rebuilding `Print_Area`
 4. **XML escaping**: All user input is automatically escaped using W3C-compliant XML escaping
 
 ### Section-table Placeholder Example
@@ -202,8 +202,17 @@ Request data (`POST /generate/excel`, same v1 endpoint):
 |--------|---------------|-------|----------|
 | ExcelJS | ❌ Changes values | Medium | ✅ |
 | xlsx-populate | ✅ Preserves | Medium | ✅ |
-| Direct XML (test8) | ✅ Preserves | ⚡ Fast | ⚠️ Manual escaping |
-| **test9 (Current)** | ✅ Preserves | ⚡ Fast | ✅ Auto-escaping |
+| Direct XML (manual escaping) | ✅ Preserves | Fast | ⚠️ Manual escaping required |
+| **Direct XML (current implementation)** | ✅ Preserves | Fast | ✅ Auto-escaping |
+
+### Section-Table Paging
+
+For `{{##section.table.cell}}`, the server treats the contiguous template rows for one record as one block.
+
+- Rows are duplicated per record while preserving cell style, merged cells, and formulas.
+- When a record would cross a page, blank rows are inserted before that record so it starts on the next page.
+- `Print_Area` is recalculated from the template's page settings and the generated sheet layout.
+- Blank rows inserted for a page break are kept inside the previous page's print area so the Excel file looks natural when opened directly.
 
 ## Contributing
 

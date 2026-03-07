@@ -93,7 +93,8 @@ Method:
 1. Detect contiguous row blocks per `section.table`.
 2. Duplicate the block based on record count.
 3. Add shared strings and update indices.
-4. Expand `Print_Area` automatically when needed.
+4. Insert blank rows before a record when that record must start on a new page.
+5. Rebuild `Print_Area` automatically from the generated layout.
 
 Constraints:
 - Do not mix `{{#...}}` and `{{##...}}` in the same template.
@@ -102,25 +103,31 @@ Constraints:
 ## 5. Page break (`Print_Area`) update
 
 - Read `_xlnm.Print_Area` from `workbook.xml`.
-- Use first-page range height as the baseline.
-- Compute required page count.
-- Rebuild ranges in the form `A1:Q40,A41:Q80,...`.
-- Current logic is row-count based, not physical height based.
+- Use the first range as the base column range and page start.
+- Read page settings from `sheetN.xml` such as paper size, orientation, margins, and fit-to-width settings.
+- Estimate effective page height from the template layout.
+- Rebuild ranges to match the generated rows after section-table expansion.
+- When a record would cross a page, insert blank rows before that record and keep those blank rows in the previous page range.
 
 Implementation points:
 - `parseFirstPrintArea(...)`
-- `buildPagedPrintAreas(...)`
+- `buildPrintAreasByHeight(...)`
 - `updatePrintAreaForSheet(...)`
 
 ### 5.1 Current limitations
 
-The current page calculation does not include:
+The current page calculation still has limits. It does not fully reproduce:
 
-- Actual row height (`<row ht="...">`)
-- Auto-height expansion from text wrapping
+- Auto-height expansion that Excel/LibreOffice decides at render time without explicit `wrapText`
 - Height occupied by drawing objects (images/shapes)
+- Font rendering differences between Excel and LibreOffice
 
-As a result, templates with long text, inserted images, or heavy wrapping may produce page breaks that differ from the final printed/PDF layout.
+Current behavior:
+- Explicit row heights (`<row ht="...">`) are used.
+- `wrapText="1"` styles are considered when estimating row height.
+- Cells without wrapping use their row height as-is.
+
+As a result, templates with long text, inserted images, or renderer-specific layout behavior may still produce page breaks that differ slightly from the final printed/PDF layout.
 
 ## 6. Where `wrapText` is stored
 
@@ -136,8 +143,8 @@ Wrapping behavior is mainly determined by this combination:
 
 Notes:
 - Effective style can also be influenced by defaults (`xfId`) and row/column settings.
-- Final rendered row height may be decided by Excel/LibreOffice at render time.
-- For better page-break accuracy in the future, `wrapText` evaluation plus height estimation is required.
+- Final rendered row height may still be decided by Excel/LibreOffice at render time.
+- The current implementation uses `wrapText` and page settings as an estimate, not a perfect renderer clone.
 
 ## 7. Template info APIs
 
@@ -182,8 +189,9 @@ Notes:
 - Same section appears in multiple separate blocks
 
 4. Page breaks are offset from expectation
-- Calculation is row-count based and does not include wrap/image height
+- Check template `Print_Area`, `pageSetup`, `pageMargins`, and row heights first
 - Inspect `wrapText` in `styles.xml` and cell style indices in `sheetN.xml`
+- For section-table templates, confirm that one record block is contiguous and that the record itself is not taller than one page
 
 ## 9. Debug commands
 

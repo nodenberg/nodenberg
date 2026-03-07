@@ -60,6 +60,34 @@ const handleError = (res: Response, error: unknown, message: string) => {
 };
 
 type SheetSelectBy = 'id' | 'name';
+const MAX_PDF_TIMEOUT_MS = 300000;
+
+function parsePdfRequestOptions(body: any): { timeout?: number } {
+  const rawOptions = body?.options;
+  if (rawOptions === undefined || rawOptions === null) return {};
+
+  if (typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
+    throw new Error('Invalid options (must be an object)');
+  }
+
+  const allowedKeys = new Set(['timeout']);
+  const unsupportedKeys = Object.keys(rawOptions).filter((key) => !allowedKeys.has(key));
+  if (unsupportedKeys.length > 0) {
+    throw new Error(`Unsupported PDF options: ${unsupportedKeys.join(', ')}`);
+  }
+
+  const parsed: { timeout?: number } = {};
+  if (rawOptions.timeout !== undefined) {
+    const timeout =
+      typeof rawOptions.timeout === 'number' ? rawOptions.timeout : Number(rawOptions.timeout);
+    if (!Number.isInteger(timeout) || timeout < 1000 || timeout > MAX_PDF_TIMEOUT_MS) {
+      throw new Error(`Invalid options.timeout (must be an integer between 1000 and ${MAX_PDF_TIMEOUT_MS})`);
+    }
+    parsed.timeout = timeout;
+  }
+
+  return parsed;
+}
 
 function parseDisplayOrder(body: any): number {
   const value = body?.displayOrder;
@@ -160,7 +188,7 @@ app.post('/template/info', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       templateInfo,
-      note: 'Print settings are automatically preserved (test9 method)',
+      note: 'Print settings are automatically preserved by direct XML editing.',
     });
   } catch (error) {
     handleError(res, error, 'Failed to get template info');
@@ -348,7 +376,8 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Placeholder data is required' });
     }
 
-    const generator = new PDFGenerator(options);
+    const pdfRequestOptions = parsePdfRequestOptions(req.body);
+    const generator = new PDFGenerator(pdfRequestOptions);
 
     // Check if LibreOffice is installed
     const isInstalled = await generator.checkLibreOfficeInstalled();
@@ -368,7 +397,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
     let pdfBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      const pdfOptions = { ...(options || {}), ...(selector || {}) };
+      const pdfOptions = { ...pdfRequestOptions, ...(selector || {}) };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
@@ -406,7 +435,8 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
       return res.status(400).json({ error: 'Placeholder data is required' });
     }
 
-    const generator = new PDFGenerator(options);
+    const pdfRequestOptions = parsePdfRequestOptions(req.body);
+    const generator = new PDFGenerator(pdfRequestOptions);
 
     const isInstalled = await generator.checkLibreOfficeInstalled();
     if (!isInstalled) {
@@ -435,7 +465,7 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
         });
       }
 
-      const pdfOptions = { ...(options || {}), sheetName: selectedSheet.name };
+      const pdfOptions = { ...pdfRequestOptions, sheetName: selectedSheet.name };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
@@ -481,7 +511,7 @@ app.listen(port, () => {
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║                                                              ║');
   console.log('║   Nodenberg API Server                                       ║');
-  console.log('║   Excel & PDF Generation with test9 Method                   ║');
+  console.log('║   Excel & PDF Generation with XML-based print preservation   ║');
   console.log('║                                                              ║');
   console.log('╚══════════════════════════════════════════════════════════════╝');
   console.log('');

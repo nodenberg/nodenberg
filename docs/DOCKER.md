@@ -42,7 +42,7 @@ docker compose logs -f
 
 ```bash
 # Health check endpoint
-curl http://localhost:3100/health
+curl http://localhost:3200/health
 
 # Example response:
 # {
@@ -407,21 +407,21 @@ npm test
 export API_KEY="your-secret-api-key"
 
 # Health check
-curl http://localhost:3100/health
+curl http://localhost:3200/health
 
 # Get template info (requires API key)
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -d '{"templateBase64":"..."}' \
-  http://localhost:3100/template/info
+  http://localhost:3200/template/info
 ```
 
 ## Related Documents
 
 - [API.md](API.md): API specification
-- [README.md](README.md): Project overview
-- [tests/README.md](tests/README.md): Test guide
+- [../README.md](../README.md): Project overview
+- [../tests/README.md](../tests/README.md): Test guide
 
 ## Best Practices
 
