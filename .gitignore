@@ -44,6 +44,11 @@ node_modules/.cache
 build.log
 
 # test
-/tests
+/tests/*
+!/tests/README.md
+!/tests/verify-print-settings.ts
+!/tests/verify-section-table.ts
+!/tests/verify-image-placeholder.ts
+/tests/outputs/
 
 dist/
