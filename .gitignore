@@ -52,3 +52,6 @@ build.log
 /tests/outputs/
 
 dist/
+
+_tmp/
+_tmp/*
