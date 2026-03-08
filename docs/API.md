@@ -330,6 +330,12 @@ Generate Excel file by replacing placeholders with data.
       { "番号": 1, "項目": "Webデザイン一式", "数量": 15, "単位": "個", "単価": 8000 },
       { "番号": 2, "項目": "バナー制作", "数量": 5, "単位": "個", "単価": 6000 }
     ]
+  },
+  "images": {
+    "companyLogo": {
+      "contentType": "image/png",
+      "base64": "iVBORw0KGgoAAA..."
+    }
   }
 }
 ```
@@ -337,6 +343,7 @@ Generate Excel file by replacing placeholders with data.
 **Parameters:**
 - `templateBase64` (required): Base64-encoded Excel template
 - `data` (required): Object with placeholder replacements
+- `images` (optional): Image placeholder map. Template cells can use `{{%companyLogo}}` and the image will be embedded into that cell or merged range.
 - `sheetSelectBy` (optional): `"id"` or `"name"` (only effective when `sheetSelectValue` is also provided)
 - `sheetSelectValue` (optional): Sheet selector value (integer for `"id"`, string for `"name"`)
 
@@ -363,6 +370,12 @@ curl -X POST http://localhost:3000/generate/excel \
       "金額": "¥1,234,567",
       "担当者": "山田太郎"
     },
+    "images": {
+      "companyLogo": {
+        "contentType": "image/png",
+        "base64": "iVBORw0KGgoAAA..."
+      }
+    },
     "sheetSelectBy": "name",
     "sheetSelectValue": "スタンダード請求書 単位あり 10％ "
   }' \
@@ -377,7 +390,10 @@ cat response.json | jq -r '.data' | base64 -d > output.xlsx
 - If the template uses array placeholders like `{{#明細.項目}}`, the server may also:
   - Insert rows into `xl/worksheets/sheet1.xml` to fit array data (template row style/merge-cells are duplicated)
   - Update `xl/workbook.xml` `_xlnm.Print_Area` to add page ranges when 1+ rows overflow
-- Current limitation: array expansion targets `sheet1.xml` and the first detected array only
+- `{{##section.table.field}}` supports multi-row detail blocks inside a section/table block
+- `{{%imageKey}}` embeds an image into the placeholder cell or merged range
+- If an image would cross a print-page boundary, the image is moved to the next page instead of being split across pages
+- Legacy `{{#...}}` expansion still targets `sheet1.xml`
 
 ---
 
@@ -440,6 +456,12 @@ Generate PDF file from Excel template (requires LibreOffice).
     "日付": "2025/12/13",
     "金額": "¥1,234,567",
     "担当者": "山田太郎"
+  },
+  "images": {
+    "companyLogo": {
+      "contentType": "image/png",
+      "base64": "iVBORw0KGgoAAA..."
+    }
   }
 }
 ```
@@ -447,6 +469,7 @@ Generate PDF file from Excel template (requires LibreOffice).
 **Parameters:**
 - `templateBase64` (required): Base64-encoded Excel template
 - `data` (required): Object with placeholder replacements
+- `images` (optional): Image placeholder map. Template cells can use `{{%companyLogo}}` and the image will be embedded into that cell or merged range.
 - `sheetSelectBy` (optional): `"id"` or `"name"` (only effective when `sheetSelectValue` is also provided)
 - `sheetSelectValue` (optional): Sheet selector value (integer for `"id"`, string for `"name"`)
 - `options` (optional): PDF generation options (soffice command, timeout, etc.)
@@ -609,6 +632,19 @@ Placeholders in Excel templates should use the following format:
 {{placeholder_name}}
 ```
 
+### Image placeholders
+
+For image embedding, use:
+```
+{{%imageKey}}
+```
+
+Example:
+- `{{%companyLogo}}`
+- `{{%stamp}}`
+
+The request body must provide the matching image in `images.imageKey`.
+
 ### Array (Table) placeholders
 
 For table expansion, use:
@@ -623,6 +659,20 @@ Example:
 - `{{#明細.単位}}`
 - `{{#明細.単価}}`
 
+### Section table placeholders
+
+For nested section/table expansion, use:
+```
+{{##section.table.field}}
+```
+
+Example:
+- `{{##請求.明細.番号}}`
+- `{{##請求.明細.項目}}`
+- `{{##請求.明細.数量}}`
+
+This format supports multi-row detail blocks as long as the placeholder rows are arranged as one continuous block in the template.
+
 **Examples:**
 - `{{会社名}}`
 - `{{date}}`
@@ -633,6 +683,7 @@ Example:
 - Placeholders are case-sensitive
 - Can contain Japanese characters, letters, numbers, and underscores
 - Must be wrapped in double curly braces `{{ }}`
+- `#` is for array rows, `##` is for section/table rows, `%` is for images
 
 ---
 
@@ -666,6 +717,11 @@ If the template has a first print area (via `xl/workbook.xml` `_xlnm.Print_Area`
 - The server appends the next print area with the same height.
 - Example (page height = 40 rows): `$A$1:$Q$40` → `$A$1:$Q$40,$A$41:$Q$80`
 
+For image placeholders:
+- Images are anchored to the placeholder cell or merged range
+- If an image would cross a print-page boundary, its drawing anchor is moved to the next page
+- This prevents a single image from being split between page 1 and page 2 in the exported PDF
+
 ---
 
 ## Testing
@@ -693,6 +749,7 @@ Use the separate static test client in `04_api-test-client` (served by `http-ser
 
 **Features:**
 - File upload
+- Image upload (`{{%imageKey}}`)
 - Placeholder detection
 - Template info display
 - JSON data input
@@ -764,4 +821,4 @@ For issues or questions:
 
 **Current Version:** 0.0.1
 
-**Last Updated:** 2025-12-13
+**Last Updated:** 2026-03-08

@@ -236,7 +236,7 @@ app.post('/template/upload', async (req: Request, res: Response) => {
  */
 app.post('/generate/excel', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data } = req.body;
+    const { templateBase64, data, images } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -250,7 +250,7 @@ app.post('/generate/excel', async (req: Request, res: Response) => {
     let excelBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      excelBuffer = await generator.generateExcel(templateBase64, data, selector || {});
+      excelBuffer = await generator.generateExcel(templateBase64, data, { ...(selector || {}), images });
     } catch (e) {
       return res.status(400).json({
         error: 'Invalid sheet selector',
@@ -277,7 +277,7 @@ app.post('/generate/excel', async (req: Request, res: Response) => {
  */
 app.post('/generate/excel/by-display-order', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data } = req.body;
+    const { templateBase64, data, images } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -300,7 +300,10 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
         });
       }
 
-      excelBuffer = await generator.generateExcel(templateBase64, data, { sheetName: selectedSheet.name });
+      excelBuffer = await generator.generateExcel(templateBase64, data, {
+        sheetName: selectedSheet.name,
+        images,
+      });
     } catch (e) {
       return res.status(400).json({
         error: 'Invalid displayOrder',
@@ -326,7 +329,7 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
  */
 app.post('/generate/pdf', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, options } = req.body;
+    const { templateBase64, data, options, images } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -356,7 +359,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
     let pdfBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      const pdfOptions = { ...(options || {}), ...(selector || {}) };
+      const pdfOptions = { ...(options || {}), ...(selector || {}), images };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
@@ -384,7 +387,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
  */
 app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, options } = req.body;
+    const { templateBase64, data, options, images } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -423,7 +426,7 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
         });
       }
 
-      const pdfOptions = { ...(options || {}), sheetName: selectedSheet.name };
+      const pdfOptions = { ...(options || {}), sheetName: selectedSheet.name, images };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({

@@ -6,10 +6,14 @@ Node.js-based Excel report generation system with print settings preservation.
 - Table (array) expansion + multi-page print area: **test13-like behavior**
   - Inserts rows into `xl/worksheets/sheet1.xml` when array data exceeds template rows
   - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
+- Image placeholders: `{{%imageKey}}`
+  - Embeds PNG/JPEG images from the request body `images`
+  - If an image would cross a print-page boundary, it is moved to the next page as one block
 
 ## Features
 
 - 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, also updates `sheet1.xml` + `workbook.xml` as needed
+- 🖼️ **Image Embedding** - supports `{{%imageKey}}` placeholders for PNG/JPEG images
 - ⚡ **Fast Processing** - Direct XML manipulation (~50-100ms per document)
 - 🔒 **Secure** - W3C-compliant XML escaping prevents injection attacks
 - 🐳 **Docker Ready** - Includes LibreOffice and Japanese fonts
@@ -77,6 +81,12 @@ npm run dev
 - **POST /template/upload** - Upload template metadata (optional JSON template generation)
 - **POST /generate/excel** - Generate Excel file (supports table expansion)
 - **POST /generate/pdf** - Generate PDF file (requires LibreOffice)
+
+Placeholder formats:
+- `{{会社名}}` - normal text
+- `{{#明細.項目}}` - legacy array row
+- `{{##請求.明細.項目}}` - section/table multi-row detail block
+- `{{%companyLogo}}` - image placeholder
 
 See `03_docker-version/docs/API.md` for request/response examples.
 
