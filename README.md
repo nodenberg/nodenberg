@@ -2,17 +2,14 @@
 
 Node.js-based Excel report generation system with print settings preservation.
 
-- Base placeholder replacement: **test9 method** (edits `xl/sharedStrings.xml`)
-- Table (array) expansion + multi-page print area: **test13-like behavior**
-  - Inserts rows into `xl/worksheets/sheet1.xml` when array data exceeds template rows
-  - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
-- Image placeholders: `{{%imageKey}}`
-  - Embeds PNG/JPEG images from the request body `images`
-  - If an image would cross a print-page boundary, it is moved to the next page as one block
+- Standard placeholders are replaced by editing `xl/sharedStrings.xml` directly, which preserves template print settings.
+- Table expansion supports `{{#array.field}}`, `{{##section.table.cell}}`, and `{{%imageKey}}`.
+- Section-table mode detects the target sheet automatically, duplicates multi-row record blocks, and recalculates `Print_Area` for Excel/PDF output.
+- If an image would cross a print-page boundary, it is moved to the next page as one block.
 
 ## Features
 
-- 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, also updates `sheet1.xml` + `workbook.xml` as needed
+- 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, updates target `sheetX.xml` + `workbook.xml` as needed
 - 🖼️ **Image Embedding** - supports `{{%imageKey}}` placeholders for PNG/JPEG images
 - ⚡ **Fast Processing** - Direct XML manipulation (~50-100ms per document)
 - 🔒 **Secure** - W3C-compliant XML escaping prevents injection attacks
@@ -44,7 +41,7 @@ docker compose ps
 
 The application will be available at `http://localhost:3200`.
 
-**詳細なDockerの使用方法は [DOCKER.md](DOCKER.md) を参照してください。**
+**詳細なDockerの使用方法は [docs/DOCKER.md](docs/DOCKER.md) を参照してください。**
 
 ### Manual Docker Setup
 
@@ -78,17 +75,17 @@ npm run dev
 - **GET  /health** - Health check (no API key required)
 - **POST /template/placeholders** - Detect placeholders in template
 - **POST /template/info** - Get template information
-- **POST /template/upload** - Upload template metadata (optional JSON template generation)
+- **POST /template/validate** - Validate template metadata (optional JSON template generation)
 - **POST /generate/excel** - Generate Excel file (supports table expansion)
 - **POST /generate/pdf** - Generate PDF file (requires LibreOffice)
+
+See [docs/API.md](docs/API.md) for request/response examples.
 
 Placeholder formats:
 - `{{会社名}}` - normal text
 - `{{#明細.項目}}` - legacy array row
 - `{{##請求.明細.項目}}` - section/table multi-row detail block
 - `{{%companyLogo}}` - image placeholder
-
-See `03_docker-version/docs/API.md` for request/response examples.
 
 ### Build for Production
 
@@ -162,16 +159,43 @@ npm start
 
 ## Architecture
 
-### test9 Method - Print Settings Preservation
+### Shared-String Based Generation
 
-This application uses the **test9 method** for Excel generation, which:
+This application generates Excel files by editing the XML inside `.xlsx` files directly:
 
 1. **Reads Excel as ZIP**: .xlsx files are ZIP archives containing XML files
-2. **Edits sharedStrings.xml directly**: Placeholders are stored in `xl/sharedStrings.xml`
+2. **Edits `sharedStrings.xml` directly**: Placeholders are stored in `xl/sharedStrings.xml`
 3. **Preserves print settings**:
-   - For normal placeholders: `sheet1.xml` is not modified
-   - For table expansion (`{{#...}}`): `sheet1.xml` and `workbook.xml` may be updated (rows inserted + Print_Area paged)
+   - For normal placeholders: worksheet XML is not modified
+   - For table expansion:
+     - Legacy `{{#...}}`: `sheet1.xml` and `workbook.xml` may be updated
+     - Section-table `{{##section.table.cell}}`: target worksheet XML and `workbook.xml` may be updated
+     - Section-table output recalculates page boundaries from print settings and record layout before rebuilding `Print_Area`
 4. **XML escaping**: All user input is automatically escaped using W3C-compliant XML escaping
+
+### Section-table Placeholder Example
+
+Template placeholder:
+
+```text
+{{##請求.明細.項目}}
+```
+
+Request data (`POST /generate/excel`, same v1 endpoint):
+
+```json
+{
+  "data": {
+    "会社名": "テスト株式会社",
+    "請求": {
+      "明細": [
+        { "番号": 1, "項目": "Webデザイン一式", "数量": 2, "単価": 8000 },
+        { "番号": 2, "項目": "バナー制作", "数量": 5, "単価": 6000 }
+      ]
+    }
+  }
+}
+```
 
 **Benefits**:
 - ✅ Print settings are kept from the template
@@ -185,8 +209,17 @@ This application uses the **test9 method** for Excel generation, which:
 |--------|---------------|-------|----------|
 | ExcelJS | ❌ Changes values | Medium | ✅ |
 | xlsx-populate | ✅ Preserves | Medium | ✅ |
-| Direct XML (test8) | ✅ Preserves | ⚡ Fast | ⚠️ Manual escaping |
-| **test9 (Current)** | ✅ Preserves | ⚡ Fast | ✅ Auto-escaping |
+| Direct XML (manual escaping) | ✅ Preserves | Fast | ⚠️ Manual escaping required |
+| **Direct XML (current implementation)** | ✅ Preserves | Fast | ✅ Auto-escaping |
+
+### Section-Table Paging
+
+For `{{##section.table.cell}}`, the server treats the contiguous template rows for one record as one block.
+
+- Rows are duplicated per record while preserving cell style, merged cells, and formulas.
+- When a record would cross a page, blank rows are inserted before that record so it starts on the next page.
+- `Print_Area` is recalculated from the template's page settings and the generated sheet layout.
+- Blank rows inserted for a page break are kept inside the previous page's print area so the Excel file looks natural when opened directly.
 
 ## Contributing
 

@@ -60,6 +60,34 @@ const handleError = (res: Response, error: unknown, message: string) => {
 };
 
 type SheetSelectBy = 'id' | 'name';
+const MAX_PDF_TIMEOUT_MS = 300000;
+
+function parsePdfRequestOptions(body: any): { timeout?: number } {
+  const rawOptions = body?.options;
+  if (rawOptions === undefined || rawOptions === null) return {};
+
+  if (typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
+    throw new Error('Invalid options (must be an object)');
+  }
+
+  const allowedKeys = new Set(['timeout']);
+  const unsupportedKeys = Object.keys(rawOptions).filter((key) => !allowedKeys.has(key));
+  if (unsupportedKeys.length > 0) {
+    throw new Error(`Unsupported PDF options: ${unsupportedKeys.join(', ')}`);
+  }
+
+  const parsed: { timeout?: number } = {};
+  if (rawOptions.timeout !== undefined) {
+    const timeout =
+      typeof rawOptions.timeout === 'number' ? rawOptions.timeout : Number(rawOptions.timeout);
+    if (!Number.isInteger(timeout) || timeout < 1000 || timeout > MAX_PDF_TIMEOUT_MS) {
+      throw new Error(`Invalid options.timeout (must be an integer between 1000 and ${MAX_PDF_TIMEOUT_MS})`);
+    }
+    parsed.timeout = timeout;
+  }
+
+  return parsed;
+}
 
 function parseDisplayOrder(body: any): number {
   const value = body?.displayOrder;
@@ -160,7 +188,7 @@ app.post('/template/info', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       templateInfo,
-      note: 'Print settings are automatically preserved (test9 method)',
+      note: 'Print settings are automatically preserved by direct XML editing.',
     });
   } catch (error) {
     handleError(res, error, 'Failed to get template info');
@@ -192,11 +220,7 @@ app.post('/template/sheets', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /template/upload
- * Upload template (store with optional JSON template generation)
- */
-app.post('/template/upload', async (req: Request, res: Response) => {
+async function handleTemplateValidate(req: Request, res: Response) {
   try {
     const { templateId, templateName, base64Data, generateJsonTemplate } = req.body;
 
@@ -224,8 +248,24 @@ app.post('/template/upload', async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    handleError(res, error, 'Failed to upload template');
+    handleError(res, error, 'Failed to validate template');
   }
+}
+
+/**
+ * POST /template/validate
+ * Validate template payload and optionally generate JSON template
+ */
+app.post('/template/validate', handleTemplateValidate);
+
+/**
+ * POST /template/upload (deprecated alias)
+ * Backward-compatible alias of /template/validate
+ */
+app.post('/template/upload', (req: Request, res: Response) => {
+  res.setHeader('Deprecation', 'true');
+  res.setHeader('Sunset', '2026-12-31');
+  return handleTemplateValidate(req, res);
 });
 
 // ===== Document Generation Endpoints =====
@@ -329,7 +369,7 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
  */
 app.post('/generate/pdf', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, options, images } = req.body;
+    const { templateBase64, data, images } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -339,7 +379,8 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Placeholder data is required' });
     }
 
-    const generator = new PDFGenerator(options);
+    const pdfRequestOptions = parsePdfRequestOptions(req.body);
+    const generator = new PDFGenerator(pdfRequestOptions);
 
     // Check if LibreOffice is installed
     const isInstalled = await generator.checkLibreOfficeInstalled();
@@ -359,7 +400,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
     let pdfBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      const pdfOptions = { ...(options || {}), ...(selector || {}), images };
+      const pdfOptions = { ...pdfRequestOptions, ...(selector || {}), images };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
@@ -387,7 +428,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
  */
 app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, options, images } = req.body;
+    const { templateBase64, data, images } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -397,7 +438,8 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
       return res.status(400).json({ error: 'Placeholder data is required' });
     }
 
-    const generator = new PDFGenerator(options);
+    const pdfRequestOptions = parsePdfRequestOptions(req.body);
+    const generator = new PDFGenerator(pdfRequestOptions);
 
     const isInstalled = await generator.checkLibreOfficeInstalled();
     if (!isInstalled) {
@@ -426,7 +468,7 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
         });
       }
 
-      const pdfOptions = { ...(options || {}), sheetName: selectedSheet.name, images };
+      const pdfOptions = { ...pdfRequestOptions, sheetName: selectedSheet.name, images };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
@@ -457,6 +499,7 @@ app.use((req: Request, res: Response) => {
       'POST /template/placeholders',
       'POST /template/info',
       'POST /template/sheets',
+      'POST /template/validate',
       'POST /template/upload',
       'POST /generate/excel',
       'POST /generate/excel/by-display-order',
@@ -471,7 +514,7 @@ app.listen(port, () => {
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║                                                              ║');
   console.log('║   Nodenberg API Server                                       ║');
-  console.log('║   Excel & PDF Generation with test9 Method                   ║');
+  console.log('║   Excel & PDF Generation with XML-based print preservation   ║');
   console.log('║                                                              ║');
   console.log('╚══════════════════════════════════════════════════════════════╝');
   console.log('');
@@ -484,6 +527,7 @@ app.listen(port, () => {
   console.log('  • POST /template/placeholders');
   console.log('  • POST /template/info');
   console.log('  • POST /template/sheets');
+  console.log('  • POST /template/validate');
   console.log('  • POST /template/upload');
   console.log('  • POST /generate/excel');
   console.log('  • POST /generate/excel/by-display-order');

@@ -1,10 +1,10 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface SofficeConversionOptions {
   /**
@@ -46,6 +46,15 @@ export class SofficeConverter {
     this.executionMode = options.executionMode || 'simple';
   }
 
+  private validateConfiguredPaths(): void {
+    if (!this.sofficeCommand || this.sofficeCommand.includes('\0')) {
+      throw new Error('Invalid soffice command');
+    }
+    if (!this.tempDir || this.tempDir.includes('\0')) {
+      throw new Error('Invalid temporary directory');
+    }
+  }
+
   /**
    * headless実行時に最低限必要な環境変数を補う
    */
@@ -57,28 +66,22 @@ export class SofficeConverter {
     };
   }
 
-  /**
-   * コマンドラインを構築
-   */
-  private buildCommand(args: string): string {
-    const platform = os.platform();
+  private async runProcess(args: string[], timeout: number): Promise<{ stdout: string; stderr: string }> {
+    this.validateConfiguredPaths();
 
-    if (this.executionMode === 'simple') {
-      // シンプルモード: sofficeコマンドを直接実行
-      if (platform === 'win32') {
-        // Windowsの場合は引用符で囲む
-        return `"${this.sofficeCommand}" ${args}`;
-      } else {
-        return `${this.sofficeCommand} ${args}`;
-      }
-    } else {
-      // cmdモード: Windows環境でcmd.exe経由で実行
-      if (platform === 'win32') {
-        return `cmd /c ""${this.sofficeCommand}" ${args}"`;
-      } else {
-        return `"${this.sofficeCommand}" ${args}`;
-      }
+    if (os.platform() === 'win32' && this.executionMode === 'cmd') {
+      return execFileAsync('cmd', ['/c', this.sofficeCommand, ...args], {
+        timeout,
+        maxBuffer: 10 * 1024 * 1024,
+        env: this.buildExecEnv(),
+      });
     }
+
+    return execFileAsync(this.sofficeCommand, args, {
+      timeout,
+      maxBuffer: 10 * 1024 * 1024,
+      env: this.buildExecEnv(),
+    });
   }
 
   /**
@@ -112,12 +115,7 @@ export class SofficeConverter {
    */
   async checkSofficeInstalled(): Promise<boolean> {
     try {
-      const command = this.buildCommand('--version');
-
-      const { stdout } = await execAsync(command, {
-        timeout: 5000,
-        env: this.buildExecEnv(),
-      });
+      const { stdout } = await this.runProcess(['--version'], 5000);
       return stdout.includes('LibreOffice') || stdout.includes('OpenOffice');
     } catch (error) {
       console.error('Error checking soffice installation:', error);
@@ -153,22 +151,16 @@ export class SofficeConverter {
       // --headless: ヘッドレスモード
       // --convert-to pdf: PDF形式に変換
       // --outdir: 出力ディレクトリ
-      const command = this.buildCommand(`--headless --convert-to pdf --outdir "${workDir}" "${inputFile}"`);
-
-      console.log('Executing soffice command:', command);
-
-      // 生成されたPDFファイルを読み込み
+      const args = ['--headless', '--convert-to', 'pdf', '--outdir', workDir, inputFile];
       const outputFile = path.join(workDir, 'input.pdf');
+
+      console.log('Executing soffice command:', this.sofficeCommand, args);
 
       let stdout = '';
       let stderr = '';
 
       try {
-        const result = await execAsync(command, {
-          timeout: this.timeout,
-          maxBuffer: 10 * 1024 * 1024, // 10MB
-          env: this.buildExecEnv(),
-        });
+        const result = await this.runProcess(args, this.timeout);
         stdout = result.stdout;
         stderr = result.stderr;
       } catch (error) {
@@ -256,12 +248,7 @@ export class SofficeConverter {
    */
   async getLibreOfficeVersion(): Promise<string> {
     try {
-      const command = this.buildCommand('--version');
-
-      const { stdout } = await execAsync(command, {
-        timeout: 5000,
-        env: this.buildExecEnv(),
-      });
+      const { stdout } = await this.runProcess(['--version'], 5000);
       return stdout.trim();
     } catch (error) {
       throw new Error('Failed to get LibreOffice version');

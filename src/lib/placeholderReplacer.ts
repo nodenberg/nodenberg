@@ -13,7 +13,6 @@ export interface PlaceholderData {
 export interface PlaceholderReplaceOptions {
   images?: PlaceholderImages;
 }
-
 type LegacyArrayPlaceholder = {
   placeholderKey: string;
   arrayName: string;
@@ -52,7 +51,6 @@ type ImagePlaceholderBlock = {
   startRow: number;
   endRow: number;
 };
-
 /**
  * XML特殊文字をエスケープ（W3C準拠）
  */
@@ -2080,7 +2078,6 @@ export class PlaceholderReplacer {
         }
       }
     }
-
     // Stage B: 通常プレースホルダー（先頭run書式を維持して sharedStrings を置換）
     const primitiveReplacements = new Map<string, string>();
     Object.entries(data).forEach(([key, value]) => {
@@ -2102,7 +2099,6 @@ export class PlaceholderReplacer {
       sharedStringsXml: replacedSharedStrings,
       images: options.images,
     });
-
     // Stage C: 旧記法でのPrint_Area更新（sheet1想定の既存互換）
     if (legacyInsertedRows > 0 && !workbookXmlForPrintArea) {
       const workbookFile = zip.file('xl/workbook.xml');

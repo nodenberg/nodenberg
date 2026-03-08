@@ -2,11 +2,10 @@
 
 Pure Express API Server for Excel & PDF generation.
 
-- Base placeholder replacement: **test9 method** (edit `xl/sharedStrings.xml`)
-- Table (array) expansion + multi-page print area: **test13-like behavior**
-  - Inserts rows into `xl/worksheets/sheet1.xml` when array data exceeds template rows
-  - If output exceeds the first print area by 1+ rows, appends the next print area with the same height
-    - Example: `$A$1:$Q$40` → `$A$1:$Q$40,$A$41:$Q$80`
+- Standard placeholders are replaced by editing `xl/sharedStrings.xml` directly.
+- Table expansion supports both legacy `{{#array.field}}` and section-table `{{##section.table.cell}}`.
+- Section-table mode detects the target sheet automatically, expands multi-row record blocks, and recalculates `Print_Area`.
+- For PDF generation through LibreOffice, page breaks are aligned to the template page settings and record boundaries.
 
 ## Base URL
 
@@ -264,11 +263,11 @@ curl -X POST http://localhost:3000/template/sheets \
 
 ---
 
-### 5. Upload Template
+### 5. Validate Template
 
-Upload template and optionally generate JSON template.
+Validate template payload and optionally generate JSON template.
 
-**Endpoint:** `POST /template/upload`
+**Endpoint:** `POST /template/validate`
 
 **Request Body:**
 ```json
@@ -301,13 +300,18 @@ Upload template and optionally generate JSON template.
 
 **Example:**
 ```bash
-curl -X POST http://localhost:3000/template/upload \
+curl -X POST http://localhost:3000/template/validate \
   -H "Content-Type: application/json" \
   -d '{
-    "templateBase64": "UEsDBBQABg...",
-    "generateJson": true
+    "templateId": "invoice-v1",
+    "templateName": "請求書テンプレート",
+    "base64Data": "UEsDBBQABg...",
+    "generateJsonTemplate": true
   }'
 ```
+
+**Compatibility note:**
+- `POST /template/upload` is kept as a backward-compatible alias and is deprecated.
 
 ---
 
@@ -386,14 +390,19 @@ cat response.json | jq -r '.data' | base64 -d > output.xlsx
 ```
 
 **Important Notes:**
-- Uses **test9 method** for normal placeholders (edits `xl/sharedStrings.xml`)
-- If the template uses array placeholders like `{{#明細.項目}}`, the server may also:
-  - Insert rows into `xl/worksheets/sheet1.xml` to fit array data (template row style/merge-cells are duplicated)
-  - Update `xl/workbook.xml` `_xlnm.Print_Area` to add page ranges when 1+ rows overflow
-- `{{##section.table.field}}` supports multi-row detail blocks inside a section/table block
+- Standard placeholders are replaced by editing `xl/sharedStrings.xml`
+- If the template uses array placeholders like `{{#明細.項目}}` (legacy), the server may also:
+  - Insert rows into `xl/worksheets/sheet1.xml` to fit array data
+  - Update `xl/workbook.xml` `_xlnm.Print_Area` when rows overflow
+- If the template uses section-table placeholders like `{{##請求.明細.項目}}` (recommended), the server:
+  - Detects the target sheet dynamically (not fixed to `sheet1.xml`)
+  - Treats the contiguous rows containing the same `section.table` placeholders as one record block
+  - Duplicates the whole block per record and preserves style/merge-cells
+  - Inserts blank rows before a record when the record would cross a printed page
+  - Rebuilds `_xlnm.Print_Area` for the target sheet from page settings and generated row layout
 - `{{%imageKey}}` embeds an image into the placeholder cell or merged range
-- If an image would cross a print-page boundary, the image is moved to the next page instead of being split across pages
-- Legacy `{{#...}}` expansion still targets `sheet1.xml`
+- If an image would cross a print-page boundary, it is moved to the next page as one block
+- `{{#...}}` and `{{##...}}` cannot be mixed in the same template
 
 ---
 
@@ -472,7 +481,7 @@ Generate PDF file from Excel template (requires LibreOffice).
 - `images` (optional): Image placeholder map. Template cells can use `{{%companyLogo}}` and the image will be embedded into that cell or merged range.
 - `sheetSelectBy` (optional): `"id"` or `"name"` (only effective when `sheetSelectValue` is also provided)
 - `sheetSelectValue` (optional): Sheet selector value (integer for `"id"`, string for `"name"`)
-- `options` (optional): PDF generation options (soffice command, timeout, etc.)
+- `options` (optional): PDF generation options. Currently only `timeout` is accepted.
 
 **Response:**
 ```json
@@ -535,7 +544,7 @@ Generate PDF by selecting one sheet using display order (1-based).
 - `templateBase64` (required): Base64-encoded Excel template
 - `data` (required): Object with placeholder replacements
 - `displayOrder` (required): 1-based sheet display order
-- `options` (optional): PDF generation options (soffice command, timeout, etc.)
+- `options` (optional): PDF generation options. Currently only `timeout` is accepted.
 
 **Example:**
 ```bash
@@ -659,19 +668,37 @@ Example:
 - `{{#明細.単位}}`
 - `{{#明細.単価}}`
 
-### Section table placeholders
+### Section + Table placeholders (multi-row block)
 
-For nested section/table expansion, use:
+For multi-row record expansion, use:
 ```
-{{##section.table.field}}
+{{##section.table.cell}}
 ```
 
 Example:
 - `{{##請求.明細.番号}}`
 - `{{##請求.明細.項目}}`
 - `{{##請求.明細.数量}}`
+- `{{##請求.明細.単価}}`
 
-This format supports multi-row detail blocks as long as the placeholder rows are arranged as one continuous block in the template.
+JSON mapping (v1 endpoint compatible):
+```json
+{
+  "data": {
+    "請求": {
+      "明細": [
+        { "番号": 1, "項目": "Webデザイン", "数量": 2, "単価": 8000 },
+        { "番号": 2, "項目": "バナー制作", "数量": 5, "単価": 6000 }
+      ]
+    }
+  }
+}
+```
+
+Rules:
+- Same `section` cannot appear in multiple blocks in one template (error)
+- Rows for one `section.table` block must be contiguous
+- If data is shorter than template block count, remaining template block cells are cleared
 
 **Examples:**
 - `{{会社名}}`
@@ -687,9 +714,9 @@ This format supports multi-row detail blocks as long as the placeholder rows are
 
 ---
 
-## test9 Method
+## XML-Based Generation
 
-The **test9 method** is the core technology that preserves Excel print settings.
+The current implementation preserves Excel print settings by editing the XML files inside `.xlsx` directly.
 
 ### How it works:
 
@@ -699,7 +726,7 @@ The **test9 method** is the core technology that preserves Excel print settings.
    - Replaces placeholder text in the XML
    - Re-zips the file
 
-2. **Why it's superior:**
+2. **Why this approach is used:**
    - **100% preservation** of print settings
    - Headers, footers, margins, page breaks all maintained
    - No library limitations (ExcelJS, xlsx, etc. lose settings)
@@ -711,11 +738,14 @@ The **test9 method** is the core technology that preserves Excel print settings.
 
 ---
 
-## Multi-page Print Area (test13-like)
+## Multi-page Print Area
 
-If the template has a first print area (via `xl/workbook.xml` `_xlnm.Print_Area`) and content exceeds it:
-- The server appends the next print area with the same height.
-- Example (page height = 40 rows): `$A$1:$Q$40` → `$A$1:$Q$40,$A$41:$Q$80`
+If the template defines `_xlnm.Print_Area` in `xl/workbook.xml`, the server recalculates it after row expansion.
+
+- The first print-area range defines the base column range and the starting page position.
+- For section-table output, page boundaries are determined from the template page settings, row heights, and record boundaries.
+- When a record must move to the next page, blank rows are inserted before that record.
+- Those blank rows are kept in the previous page's `Print_Area` so the generated Excel file still looks natural when opened in Excel or LibreOffice.
 
 For image placeholders:
 - Images are anchored to the placeholder cell or merged range
@@ -728,12 +758,12 @@ For image placeholders:
 
 ### CLI Test Suite
 
-Run automated tests:
+Run the basic API check script:
 ```bash
 npm test
 ```
 
-**Tests included:**
+This script verifies:
 - Health check
 - Placeholder detection (simple)
 - Placeholder detection (detailed)
