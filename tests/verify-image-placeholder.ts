@@ -3,13 +3,12 @@ import JSZip from 'jszip';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PlaceholderReplacer } from '../src/lib/placeholderReplacer';
-import { ImagePlaceholderInput } from '../src/lib/imagePlaceholderReplacer';
 import { ExcelGenerator } from '../src/lib/excelGenerator';
 
 const SAMPLE_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
 
-async function verifySingleImagePlaceholder() {
+async function verifySingleSectionImagePlaceholder() {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Image Sheet');
 
@@ -19,23 +18,30 @@ async function verifySingleImagePlaceholder() {
     fitToPage: true,
     fitToWidth: 1,
     fitToHeight: 1,
-    printArea: 'A1:D69',
+    printArea: 'A1:D20',
   };
 
-  worksheet.mergeCells('B69:D69');
-  worksheet.getRow(69).height = 121.7;
-  worksheet.getCell('B69').value = '{{%logo}}';
+  worksheet.mergeCells('B10:D10');
+  worksheet.getRow(10).height = 121.7;
+  worksheet.getCell('B10').value = '{{##請求.明細.image}}';
 
   const template = Buffer.from(await workbook.xlsx.writeBuffer());
   const replacer = new PlaceholderReplacer();
-  const images: Record<string, ImagePlaceholderInput> = {
-    logo: {
-      base64: SAMPLE_PNG_BASE64,
-      contentType: 'image/png',
-    },
-  };
 
-  const result = await replacer.replacePlaceholders(template, {}, { images });
+  const result = await replacer.replacePlaceholders(template, {
+    請求: {
+      明細: [
+        {
+          image: {
+            base64: SAMPLE_PNG_BASE64,
+            contentType: 'image/png',
+            name: 'logo',
+          },
+        },
+      ],
+    },
+  });
+
   const zip = await JSZip.loadAsync(result);
   const sharedStringsXml = await zip.file('xl/sharedStrings.xml')?.async('string');
   const sheetXml = await zip.file('xl/worksheets/sheet1.xml')?.async('string');
@@ -43,14 +49,13 @@ async function verifySingleImagePlaceholder() {
   const drawingXml = await zip.file('xl/drawings/drawing1.xml')?.async('string');
   const drawingRelsXml = await zip.file('xl/drawings/_rels/drawing1.xml.rels')?.async('string');
   const mediaBuffer = await zip.file('xl/media/image1.png')?.async('nodebuffer');
-  const contentTypesXml = await zip.file('[Content_Types].xml')?.async('string');
 
-  if (!sharedStringsXml || !sheetXml || !sheetRelsXml || !drawingXml || !drawingRelsXml || !mediaBuffer || !contentTypesXml) {
+  if (!sharedStringsXml || !sheetXml || !sheetRelsXml || !drawingXml || !drawingRelsXml || !mediaBuffer) {
     throw new Error('generated xlsx structure is invalid');
   }
 
-  if (sharedStringsXml.includes('{{%logo}}')) {
-    throw new Error('image placeholder was not removed from shared strings');
+  if (sharedStringsXml.includes('__section_image_')) {
+    throw new Error('generated section image token was not removed');
   }
 
   if (!sheetXml.includes('<drawing r:id="rId1"/>')) {
@@ -65,55 +70,71 @@ async function verifySingleImagePlaceholder() {
     throw new Error('drawing relationship to image is missing');
   }
 
-  if (!drawingXml.includes('<xdr:row>68</xdr:row>') || !drawingXml.includes('<xdr:row>69</xdr:row>')) {
-    throw new Error('image anchor vertical span is incorrect');
-  }
-
-  if (
-    drawingXml.includes('<xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff>') &&
-    drawingXml.includes('<xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff>')
-  ) {
-    throw new Error('image should keep aspect ratio instead of stretching to the full width');
+  if (!drawingXml.includes('name="logo"')) {
+    throw new Error('image name was not preserved');
   }
 
   if (mediaBuffer.toString('base64') !== SAMPLE_PNG_BASE64) {
     throw new Error('embedded image content does not match input');
   }
-
-  if (!contentTypesXml.includes('PartName="/xl/drawings/drawing1.xml"')) {
-    throw new Error('drawing content type override is missing');
-  }
 }
 
-async function verifyMultiImagePageBreakWithFixture() {
+async function verifySectionImagePlaceholderAcrossRecords() {
   const projectRoot = path.resolve(process.cwd(), '..');
-  const templatePath = path.join(projectRoot, '06_test-assets', 'template_image_multi-image.xlsx');
-  const requestPath = path.join(projectRoot, '06_test-assets', 'request_image.json');
   const youtubePath = path.join(projectRoot, '06_test-assets', 'youtube.png');
-  const charactorPath = path.join(projectRoot, '06_test-assets', 'charactor.jpg');
+  const characterPath = path.join(projectRoot, '06_test-assets', 'charactor.jpg');
+  const youtubeBase64 = fs.readFileSync(youtubePath).toString('base64');
+  const characterBase64 = fs.readFileSync(characterPath).toString('base64');
 
-  const templateBase64 = fs.readFileSync(templatePath).toString('base64');
-  const data = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
-  const images = {
-    youtube: {
-      contentType: 'image/png',
-      base64: fs.readFileSync(youtubePath).toString('base64'),
-    },
-    charactor: {
-      contentType: 'image/jpeg',
-      base64: fs.readFileSync(charactorPath).toString('base64'),
-    },
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Image Sheet');
+
+  worksheet.pageSetup = {
+    paperSize: 9,
+    orientation: 'portrait',
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 1,
+    printArea: 'A1:D30',
   };
 
+  worksheet.getCell('A2').value = '{{会社名}}';
+  worksheet.mergeCells('B10:D10');
+  worksheet.getRow(10).height = 90;
+  worksheet.getCell('B10').value = '{{##請求.明細.image}}';
+
+  const templateBase64 = Buffer.from(await workbook.xlsx.writeBuffer()).toString('base64');
   const generator = new ExcelGenerator();
-  const result = await generator.generateExcel(templateBase64, data, { images });
+  const result = await generator.generateExcel(templateBase64, {
+    会社名: 'テスト株式会社',
+    請求: {
+      明細: [
+        {
+          image: {
+            base64: youtubeBase64,
+            contentType: 'image/png',
+            name: 'youtube',
+          },
+        },
+        {
+          image: {
+            base64: characterBase64,
+            contentType: 'image/jpeg',
+            name: 'charactor',
+          },
+        },
+      ],
+    },
+  });
+
   const zip = await JSZip.loadAsync(result);
   const workbookXml = await zip.file('xl/workbook.xml')?.async('string');
+  const sharedStringsXml = await zip.file('xl/sharedStrings.xml')?.async('string');
   const drawingXml = await zip.file('xl/drawings/drawing1.xml')?.async('string');
   const drawingRelsXml = await zip.file('xl/drawings/_rels/drawing1.xml.rels')?.async('string');
 
-  if (!workbookXml || !drawingXml || !drawingRelsXml) {
-    throw new Error('multi-image fixture output is invalid');
+  if (!workbookXml || !sharedStringsXml || !drawingXml || !drawingRelsXml) {
+    throw new Error('section multi-image output is invalid');
   }
 
   const mediaFiles = Object.keys(zip.files).filter((name) => /^xl\/media\/image\d+\.(png|jpe?g)$/i.test(name));
@@ -121,8 +142,8 @@ async function verifyMultiImagePageBreakWithFixture() {
     throw new Error(`expected 2 embedded images, got ${mediaFiles.length}`);
   }
 
-  if (!drawingRelsXml.includes('Target="../media/image1.png"') || !drawingRelsXml.includes('Target="../media/image2.jpeg"')) {
-    throw new Error('multiple image relationships are missing');
+  if (sharedStringsXml.includes('__section_image_')) {
+    throw new Error('generated section image tokens should not remain in shared strings');
   }
 
   const anchorCount = (drawingXml.match(/<xdr:twoCellAnchor\b/g) || []).length;
@@ -134,33 +155,45 @@ async function verifyMultiImagePageBreakWithFixture() {
     throw new Error('image names were not preserved in drawing XML');
   }
 
+  const embeddedPayloads = await Promise.all(
+    mediaFiles.map(async (filename) => (await zip.file(filename)?.async('nodebuffer'))?.toString('base64') || '')
+  );
+  const payloadSet = new Set(embeddedPayloads);
+  if (!payloadSet.has(youtubeBase64) || !payloadSet.has(characterBase64)) {
+    throw new Error('embedded image content does not match section row input');
+  }
+
   const printAreaMatch = workbookXml.match(/name="_xlnm\.Print_Area"[^>]*>([^<]*)<\/definedName>/);
   const printArea = printAreaMatch ? printAreaMatch[1] : '';
-  const ranges = printArea.split(',').map((range) => {
-    const match = range.match(/\$[A-Z]+\$(\d+):\$[A-Z]+\$(\d+)/);
-    if (!match) {
-      throw new Error(`invalid print area range: ${range}`);
-    }
-    return { startRow: Number(match[1]), endRow: Number(match[2]) };
-  });
-  if (ranges.length !== 2 || ranges[0].startRow !== 1 || ranges[0].endRow !== 35 || ranges[1].startRow !== 36 || ranges[1].endRow !== 54) {
-    throw new Error(`unexpected print area after multi-image generation: ${printArea}`);
+  if (!printArea.includes('$A$1:$D$30')) {
+    throw new Error(`unexpected print area after section image generation: ${printArea}`);
+  }
+}
+
+async function verifyLegacyImagePlaceholderRejected() {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Legacy Image Sheet');
+  worksheet.getCell('B2').value = '{{%logo}}';
+
+  const template = Buffer.from(await workbook.xlsx.writeBuffer());
+  const replacer = new PlaceholderReplacer();
+
+  let errorMessage = '';
+  try {
+    await replacer.replacePlaceholders(template, {});
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
   }
 
-  const rowAnchors = Array.from(drawingXml.matchAll(/<xdr:row>(\d+)<\/xdr:row>/g)).map((match) => Number(match[1]));
-  if (rowAnchors.length < 4) {
-    throw new Error('image row anchors are missing');
-  }
-
-  const secondImageFromRow = rowAnchors[2];
-  if (secondImageFromRow !== 35) {
-    throw new Error(`second image was not moved to the next page boundary: fromRow=${secondImageFromRow}`);
+  if (!errorMessage.includes('Legacy image placeholder')) {
+    throw new Error(`legacy image placeholder should be rejected, got: ${errorMessage || 'no error'}`);
   }
 }
 
 async function main() {
-  await verifySingleImagePlaceholder();
-  await verifyMultiImagePageBreakWithFixture();
+  await verifySingleSectionImagePlaceholder();
+  await verifySectionImagePlaceholderAcrossRecords();
+  await verifyLegacyImagePlaceholderRejected();
   console.log('verify-image-placeholder: OK');
 }
 

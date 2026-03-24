@@ -1,5 +1,4 @@
 import { PlaceholderReplacer, PlaceholderData } from './placeholderReplacer';
-import { PlaceholderImages } from './imagePlaceholderReplacer';
 import { SofficeConverter, SofficeConversionOptions } from './sofficeConverter';
 import { selectSingleSheetFromWorkbookBuffer } from './sheetSelector';
 
@@ -29,7 +28,6 @@ export interface PDFGenerationOptions {
    * sheetName と同時に指定された場合は sheetId を優先します。
    */
   sheetId?: number;
-  images?: PlaceholderImages;
 }
 
 export class PDFGenerator {
@@ -61,8 +59,7 @@ export class PDFGenerator {
     // プレースホルダーを置換（test9方式 - 印刷設定完全保持）
     const excelBuffer = await this.placeholderReplacer.replacePlaceholders(
       templateBuffer,
-      data,
-      { images: options.images }
+      data
     );
 
     // 特定のシートのみを処理する場合

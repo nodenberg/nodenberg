@@ -328,17 +328,20 @@ Generate Excel file by replacing placeholders with data.
   "data": {
     "担当者": "山田太郎",
     "会社名": "テスト株式会社",
-    "請求日": "2025年12月1日",
-    "支払期限": "2025年12月31日",
-    "明細": [
-      { "番号": 1, "項目": "Webデザイン一式", "数量": 15, "単位": "個", "単価": 8000 },
-      { "番号": 2, "項目": "バナー制作", "数量": 5, "単位": "個", "単価": 6000 }
-    ]
-  },
-  "images": {
-    "companyLogo": {
-      "contentType": "image/png",
-      "base64": "iVBORw0KGgoAAA..."
+    "請求": {
+      "明細": [
+        {
+          "番号": 1,
+          "項目": "Webデザイン一式",
+          "数量": 15,
+          "単位": "個",
+          "単価": 8000,
+          "image": {
+            "contentType": "image/png",
+            "base64": "iVBORw0KGgoAAA..."
+          }
+        }
+      ]
     }
   }
 }
@@ -347,7 +350,6 @@ Generate Excel file by replacing placeholders with data.
 **Parameters:**
 - `templateBase64` (required): Base64-encoded Excel template
 - `data` (required): Object with placeholder replacements
-- `images` (optional): Image placeholder map. Template cells can use `{{%companyLogo}}` and the image will be embedded into that cell or merged range.
 - `sheetSelectBy` (optional): `"id"` or `"name"` (only effective when `sheetSelectValue` is also provided)
 - `sheetSelectValue` (optional): Sheet selector value (integer for `"id"`, string for `"name"`)
 
@@ -372,12 +374,16 @@ curl -X POST http://localhost:3000/generate/excel \
       "会社名": "テスト株式会社",
       "日付": "2025/12/13",
       "金額": "¥1,234,567",
-      "担当者": "山田太郎"
-    },
-    "images": {
-      "companyLogo": {
-        "contentType": "image/png",
-        "base64": "iVBORw0KGgoAAA..."
+      "担当者": "山田太郎",
+      "請求": {
+        "明細": [
+          {
+            "image": {
+              "contentType": "image/png",
+              "base64": "iVBORw0KGgoAAA..."
+            }
+          }
+        ]
       }
     },
     "sheetSelectBy": "name",
@@ -398,9 +404,10 @@ cat response.json | jq -r '.data' | base64 -d > output.xlsx
   - Detects the target sheet dynamically (not fixed to `sheet1.xml`)
   - Treats the contiguous rows containing the same `section.table` placeholders as one record block
   - Duplicates the whole block per record and preserves style/merge-cells
+  - Treats `{ base64, contentType }` objects in section rows as images for the matching `{{##section.table.imageField}}` cells
+  - Fits section images inside the target cell or merged range with aspect ratio preserved and a 2px inner padding
   - Inserts blank rows before a record when the record would cross a printed page
   - Rebuilds `_xlnm.Print_Area` for the target sheet from page settings and generated row layout
-- `{{%imageKey}}` embeds an image into the placeholder cell or merged range
 - If an image would cross a print-page boundary, it is moved to the next page as one block
 - `{{#...}}` and `{{##...}}` cannot be mixed in the same template
 
@@ -464,12 +471,16 @@ Generate PDF file from Excel template (requires LibreOffice).
     "会社名": "テスト株式会社",
     "日付": "2025/12/13",
     "金額": "¥1,234,567",
-    "担当者": "山田太郎"
-  },
-  "images": {
-    "companyLogo": {
-      "contentType": "image/png",
-      "base64": "iVBORw0KGgoAAA..."
+    "担当者": "山田太郎",
+    "請求": {
+      "明細": [
+        {
+          "image": {
+            "contentType": "image/png",
+            "base64": "iVBORw0KGgoAAA..."
+          }
+        }
+      ]
     }
   }
 }
@@ -478,7 +489,6 @@ Generate PDF file from Excel template (requires LibreOffice).
 **Parameters:**
 - `templateBase64` (required): Base64-encoded Excel template
 - `data` (required): Object with placeholder replacements
-- `images` (optional): Image placeholder map. Template cells can use `{{%companyLogo}}` and the image will be embedded into that cell or merged range.
 - `sheetSelectBy` (optional): `"id"` or `"name"` (only effective when `sheetSelectValue` is also provided)
 - `sheetSelectValue` (optional): Sheet selector value (integer for `"id"`, string for `"name"`)
 - `options` (optional): PDF generation options. Currently only `timeout` is accepted.
@@ -641,19 +651,6 @@ Placeholders in Excel templates should use the following format:
 {{placeholder_name}}
 ```
 
-### Image placeholders
-
-For image embedding, use:
-```
-{{%imageKey}}
-```
-
-Example:
-- `{{%companyLogo}}`
-- `{{%stamp}}`
-
-The request body must provide the matching image in `images.imageKey`.
-
 ### Array (Table) placeholders
 
 For table expansion, use:
@@ -680,6 +677,7 @@ Example:
 - `{{##請求.明細.項目}}`
 - `{{##請求.明細.数量}}`
 - `{{##請求.明細.単価}}`
+- `{{##請求.明細.image}}`
 
 JSON mapping (v1 endpoint compatible):
 ```json
@@ -687,7 +685,16 @@ JSON mapping (v1 endpoint compatible):
   "data": {
     "請求": {
       "明細": [
-        { "番号": 1, "項目": "Webデザイン", "数量": 2, "単価": 8000 },
+        {
+          "番号": 1,
+          "項目": "Webデザイン",
+          "数量": 2,
+          "単価": 8000,
+          "image": {
+            "base64": "iVBORw0KGgoAAA...",
+            "contentType": "image/png"
+          }
+        },
         { "番号": 2, "項目": "バナー制作", "数量": 5, "単価": 6000 }
       ]
     }
@@ -710,7 +717,7 @@ Rules:
 - Placeholders are case-sensitive
 - Can contain Japanese characters, letters, numbers, and underscores
 - Must be wrapped in double curly braces `{{ }}`
-- `#` is for array rows, `##` is for section/table rows, `%` is for images
+- `#` is for array rows, `##` is for section/table rows
 
 ---
 
@@ -747,8 +754,9 @@ If the template defines `_xlnm.Print_Area` in `xl/workbook.xml`, the server reca
 - When a record must move to the next page, blank rows are inserted before that record.
 - Those blank rows are kept in the previous page's `Print_Area` so the generated Excel file still looks natural when opened in Excel or LibreOffice.
 
-For image placeholders:
-- Images are anchored to the placeholder cell or merged range
+For section image cells:
+- Image objects in `section.table[]` are anchored to the matching placeholder cell or merged range
+- Images are scaled to fit within the target area with aspect ratio preserved and a 2px inner padding
 - If an image would cross a print-page boundary, its drawing anchor is moved to the next page
 - This prevents a single image from being split between page 1 and page 2 in the exported PDF
 
@@ -779,7 +787,7 @@ Use the separate static test client in `04_api-test-client` (served by `http-ser
 
 **Features:**
 - File upload
-- Image upload (`{{%imageKey}}`)
+- JSON image object input for `{{##section.table.image}}`
 - Placeholder detection
 - Template info display
 - JSON data input

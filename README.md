@@ -3,14 +3,14 @@
 Node.js-based Excel report generation system with print settings preservation.
 
 - Standard placeholders are replaced by editing `xl/sharedStrings.xml` directly, which preserves template print settings.
-- Table expansion supports `{{#array.field}}`, `{{##section.table.cell}}`, and `{{%imageKey}}`.
+- Table expansion supports `{{#array.field}}` and `{{##section.table.cell}}`, including image objects inside section rows.
 - Section-table mode detects the target sheet automatically, duplicates multi-row record blocks, and recalculates `Print_Area` for Excel/PDF output.
 - If an image would cross a print-page boundary, it is moved to the next page as one block.
 
 ## Features
 
 - 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, updates target `sheetX.xml` + `workbook.xml` as needed
-- 🖼️ **Image Embedding** - supports `{{%imageKey}}` placeholders for PNG/JPEG images
+- 🖼️ **Image Embedding** - supports image objects such as `{ base64, contentType }` in `section.table[]` rows, fitted inside the target cell/range with a 2px inner padding
 - ⚡ **Fast Processing** - Direct XML manipulation (~50-100ms per document)
 - 🔒 **Secure** - W3C-compliant XML escaping prevents injection attacks
 - 🐳 **Docker Ready** - Includes LibreOffice and Japanese fonts
@@ -85,7 +85,7 @@ Placeholder formats:
 - `{{会社名}}` - normal text
 - `{{#明細.項目}}` - legacy array row
 - `{{##請求.明細.項目}}` - section/table multi-row detail block
-- `{{%companyLogo}}` - image placeholder
+- `{{##請求.明細.image}}` - section/table image cell
 
 ### Build for Production
 
@@ -181,6 +181,12 @@ Template placeholder:
 {{##請求.明細.項目}}
 ```
 
+Section image placeholder:
+
+```text
+{{##請求.明細.image}}
+```
+
 Request data (`POST /generate/excel`, same v1 endpoint):
 
 ```json
@@ -190,7 +196,16 @@ Request data (`POST /generate/excel`, same v1 endpoint):
     "請求": {
       "明細": [
         { "番号": 1, "項目": "Webデザイン一式", "数量": 2, "単価": 8000 },
-        { "番号": 2, "項目": "バナー制作", "数量": 5, "単価": 6000 }
+        {
+          "番号": 2,
+          "項目": "バナー制作",
+          "数量": 5,
+          "単価": 6000,
+          "image": {
+            "base64": "iVBORw0KGgoAAA...",
+            "contentType": "image/png"
+          }
+        }
       ]
     }
   }
@@ -217,6 +232,7 @@ Request data (`POST /generate/excel`, same v1 endpoint):
 For `{{##section.table.cell}}`, the server treats the contiguous template rows for one record as one block.
 
 - Rows are duplicated per record while preserving cell style, merged cells, and formulas.
+- Section images are scaled with aspect ratio preserved and placed inside the target cell/range with a 2px inner padding on each side.
 - When a record would cross a page, blank rows are inserted before that record so it starts on the next page.
 - `Print_Area` is recalculated from the template's page settings and the generated sheet layout.
 - Blank rows inserted for a page break are kept inside the previous page's print area so the Excel file looks natural when opened directly.

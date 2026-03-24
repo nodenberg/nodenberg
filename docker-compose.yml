@@ -10,6 +10,7 @@ services:
       - NODE_ENV=production
       - PORT=3100
       - API_KEY=${API_KEY:-default-secret-key-please-change-this}
+      - DEBUG_IMAGE_LAYOUT=${DEBUG_IMAGE_LAYOUT:-false}
     # volumes:
       # Optional: Mount templates directory if needed
       # - ./templates:/app/templates:ro

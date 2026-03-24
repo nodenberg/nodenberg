@@ -59,6 +59,30 @@ type WorkbookSheetEntry = {
   path: string;
 };
 
+const IMAGE_BOX_PADDING_PX = 2;
+const DEBUG_IMAGE_LAYOUT = /^(1|true|yes|on)$/i.test(process.env.DEBUG_IMAGE_LAYOUT || '');
+const EMU_PER_PIXEL = 9525;
+
+type ContainedAnchorDebug = {
+  imageWidth: number;
+  imageHeight: number;
+  boxWidth: number;
+  boxHeight: number;
+  innerBoxWidth: number;
+  innerBoxHeight: number;
+  scale: number;
+  renderedWidth: number;
+  renderedHeight: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+type ContainedAnchorResult = {
+  tl: NativeAnchorPosition;
+  br: NativeAnchorPosition;
+  debug: ContainedAnchorDebug;
+};
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -428,13 +452,11 @@ function getRowHeightPoints(geometry: SheetGeometry, rowNumber: number): number 
 }
 
 function getColumnNativeWidth(geometry: SheetGeometry, colNumber: number): number {
-  const customWidth = geometry.columnWidths.get(colNumber);
-  return customWidth !== undefined ? Math.floor(customWidth * 10000) : 640000;
+  return Math.round(columnWidthToPixels(getColumnWidthChars(geometry, colNumber)) * EMU_PER_PIXEL);
 }
 
 function getRowNativeHeight(geometry: SheetGeometry, rowNumber: number): number {
-  const customHeight = geometry.rowHeights.get(rowNumber);
-  return customHeight !== undefined ? Math.floor(customHeight * 10000) : 180000;
+  return Math.round(rowHeightToPixels(getRowHeightPoints(geometry, rowNumber)) * EMU_PER_PIXEL);
 }
 
 function columnWidthToPixels(widthChars: number): number {
@@ -544,10 +566,11 @@ function locateAxisPosition(
   };
 }
 
-function buildContainedAnchor(range: CellRange, geometry: SheetGeometry, imageBuffer: Buffer): {
-  tl: NativeAnchorPosition;
-  br: NativeAnchorPosition;
-} {
+function buildContainedAnchor(
+  range: CellRange,
+  geometry: SheetGeometry,
+  imageBuffer: Buffer
+): ContainedAnchorResult {
   const imageDimensions = getImageDimensions(imageBuffer);
   const colSegments = buildAxisSegments({
     start: range.startCol,
@@ -564,11 +587,13 @@ function buildContainedAnchor(range: CellRange, geometry: SheetGeometry, imageBu
 
   const boxWidth = Math.max(1, colSegments.reduce((sum, segment) => sum + segment.pixels, 0));
   const boxHeight = Math.max(1, rowSegments.reduce((sum, segment) => sum + segment.pixels, 0));
-  const scale = Math.min(boxWidth / imageDimensions.width, boxHeight / imageDimensions.height);
+  const innerBoxWidth = Math.max(1, boxWidth - IMAGE_BOX_PADDING_PX * 2);
+  const innerBoxHeight = Math.max(1, boxHeight - IMAGE_BOX_PADDING_PX * 2);
+  const scale = Math.min(innerBoxWidth / imageDimensions.width, innerBoxHeight / imageDimensions.height);
   const renderedWidth = imageDimensions.width * scale;
   const renderedHeight = imageDimensions.height * scale;
-  const offsetX = (boxWidth - renderedWidth) / 2;
-  const offsetY = (boxHeight - renderedHeight) / 2;
+  const offsetX = IMAGE_BOX_PADDING_PX + (innerBoxWidth - renderedWidth) / 2;
+  const offsetY = IMAGE_BOX_PADDING_PX + (innerBoxHeight - renderedHeight) / 2;
 
   const fromCol = locateAxisPosition(colSegments, range.startCol - 1, offsetX);
   const toCol = locateAxisPosition(colSegments, range.startCol - 1, offsetX + renderedWidth);
@@ -587,6 +612,19 @@ function buildContainedAnchor(range: CellRange, geometry: SheetGeometry, imageBu
       nativeColOff: toCol.nativeOffset,
       nativeRow: toRow.nativeIndex,
       nativeRowOff: toRow.nativeOffset,
+    },
+    debug: {
+      imageWidth: imageDimensions.width,
+      imageHeight: imageDimensions.height,
+      boxWidth,
+      boxHeight,
+      innerBoxWidth,
+      innerBoxHeight,
+      scale,
+      renderedWidth,
+      renderedHeight,
+      offsetX,
+      offsetY,
     },
   };
 }
@@ -898,9 +936,25 @@ export async function embedImagePlaceholders(params: {
       const imageName = images[placement.imageKey]?.name || placement.imageKey;
       const baseAnchor = buildContainedAnchor(placement.range, geometry, mediaInfo.buffer);
       const anchor = keepAnchorWithinSinglePrintPage(
-        baseAnchor,
+        { tl: baseAnchor.tl, br: baseAnchor.br },
         printAreaRangesBySheet.get(sheetPath) || []
       );
+      if (DEBUG_IMAGE_LAYOUT) {
+        console.log('[image-layout-debug]', JSON.stringify({
+          sheetPath,
+          imageKey: placement.imageKey,
+          imageName,
+          cellRef: placement.cellRef,
+          range: placement.range,
+          paddingPx: IMAGE_BOX_PADDING_PX,
+          ...baseAnchor.debug,
+          baseAnchor: {
+            tl: baseAnchor.tl,
+            br: baseAnchor.br,
+          },
+          finalAnchor: anchor,
+        }));
+      }
       const relationship = `<Relationship Id="${imageRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${mediaInfo.path.split('/').pop()}"/>`;
       drawingRelsXml = appendRelationship(drawingRelsXml, relationship);
       drawingXml = appendDrawingAnchor(drawingXml, buildImageAnchorXml({

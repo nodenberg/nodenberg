@@ -98,6 +98,11 @@ function parseDisplayOrder(body: any): number {
   return asNumber;
 }
 
+function ensureLegacyImagesNotProvided(body: any): string | null {
+  if (body?.images === undefined) return null;
+  return 'Top-level "images" is no longer supported. Put image objects inside data section rows.';
+}
+
 function parseSheetSelector(body: any):
   | { sheetId: number; sheetName?: undefined }
   | { sheetName: string; sheetId?: undefined }
@@ -276,7 +281,7 @@ app.post('/template/upload', (req: Request, res: Response) => {
  */
 app.post('/generate/excel', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, images } = req.body;
+    const { templateBase64, data } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -286,11 +291,16 @@ app.post('/generate/excel', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Placeholder data is required' });
     }
 
+    const legacyImagesError = ensureLegacyImagesNotProvided(req.body);
+    if (legacyImagesError) {
+      return res.status(400).json({ error: legacyImagesError });
+    }
+
     const generator = new ExcelGenerator();
     let excelBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      excelBuffer = await generator.generateExcel(templateBase64, data, { ...(selector || {}), images });
+      excelBuffer = await generator.generateExcel(templateBase64, data, { ...(selector || {}) });
     } catch (e) {
       return res.status(400).json({
         error: 'Invalid sheet selector',
@@ -317,7 +327,7 @@ app.post('/generate/excel', async (req: Request, res: Response) => {
  */
 app.post('/generate/excel/by-display-order', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, images } = req.body;
+    const { templateBase64, data } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -325,6 +335,11 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
 
     if (!data) {
       return res.status(400).json({ error: 'Placeholder data is required' });
+    }
+
+    const legacyImagesError = ensureLegacyImagesNotProvided(req.body);
+    if (legacyImagesError) {
+      return res.status(400).json({ error: legacyImagesError });
     }
 
     const generator = new ExcelGenerator();
@@ -342,7 +357,6 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
 
       excelBuffer = await generator.generateExcel(templateBase64, data, {
         sheetName: selectedSheet.name,
-        images,
       });
     } catch (e) {
       return res.status(400).json({
@@ -369,7 +383,7 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
  */
 app.post('/generate/pdf', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, images } = req.body;
+    const { templateBase64, data } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -377,6 +391,11 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
 
     if (!data) {
       return res.status(400).json({ error: 'Placeholder data is required' });
+    }
+
+    const legacyImagesError = ensureLegacyImagesNotProvided(req.body);
+    if (legacyImagesError) {
+      return res.status(400).json({ error: legacyImagesError });
     }
 
     const pdfRequestOptions = parsePdfRequestOptions(req.body);
@@ -400,7 +419,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
     let pdfBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      const pdfOptions = { ...pdfRequestOptions, ...(selector || {}), images };
+      const pdfOptions = { ...pdfRequestOptions, ...(selector || {}) };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
@@ -428,7 +447,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
  */
 app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) => {
   try {
-    const { templateBase64, data, images } = req.body;
+    const { templateBase64, data } = req.body;
 
     if (!templateBase64) {
       return res.status(400).json({ error: 'Template base64 data is required' });
@@ -436,6 +455,11 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
 
     if (!data) {
       return res.status(400).json({ error: 'Placeholder data is required' });
+    }
+
+    const legacyImagesError = ensureLegacyImagesNotProvided(req.body);
+    if (legacyImagesError) {
+      return res.status(400).json({ error: legacyImagesError });
     }
 
     const pdfRequestOptions = parsePdfRequestOptions(req.body);
@@ -468,7 +492,7 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
         });
       }
 
-      const pdfOptions = { ...pdfRequestOptions, sheetName: selectedSheet.name, images };
+      const pdfOptions = { ...pdfRequestOptions, sheetName: selectedSheet.name };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
