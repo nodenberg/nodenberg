@@ -55,6 +55,10 @@ export class SofficeConverter {
     }
   }
 
+  private isSofficeDebugEnabled(): boolean {
+    return process.env.DEBUG_SOFFICE_COMMAND === 'true';
+  }
+
   /**
    * headless実行時に最低限必要な環境変数を補う
    */
@@ -82,6 +86,62 @@ export class SofficeConverter {
       maxBuffer: 10 * 1024 * 1024,
       env: this.buildExecEnv(),
     });
+  }
+
+  private async resolveSofficeCommandPath(): Promise<string> {
+    if (path.isAbsolute(this.sofficeCommand)) {
+      return this.sofficeCommand;
+    }
+
+    try {
+      if (os.platform() === 'win32') {
+        const { stdout } = await execFileAsync('where', [this.sofficeCommand], {
+          timeout: 5000,
+          maxBuffer: 1024 * 1024,
+          env: this.buildExecEnv(),
+        });
+        return stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || this.sofficeCommand;
+      }
+
+      const { stdout } = await execFileAsync('which', [this.sofficeCommand], {
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+        env: this.buildExecEnv(),
+      });
+      return stdout.trim() || this.sofficeCommand;
+    } catch {
+      return this.sofficeCommand;
+    }
+  }
+
+  private async logSofficeDebugContext(args: string[]): Promise<void> {
+    if (!this.isSofficeDebugEnabled()) {
+      return;
+    }
+
+    const resolvedCommand = await this.resolveSofficeCommandPath();
+    let version = '';
+    let versionError = '';
+
+    try {
+      const result = await this.runProcess(['--version'], 5000);
+      version = result.stdout.trim();
+    } catch (error) {
+      versionError = error instanceof Error ? error.message : String(error);
+    }
+
+    console.log('[soffice-debug]', JSON.stringify({
+      configuredCommand: this.sofficeCommand,
+      resolvedCommand,
+      executionMode: this.executionMode,
+      version,
+      versionError,
+      args,
+      env: {
+        HOME: this.buildExecEnv().HOME,
+        XDG_RUNTIME_DIR: this.buildExecEnv().XDG_RUNTIME_DIR,
+      },
+    }));
   }
 
   /**
@@ -154,6 +214,7 @@ export class SofficeConverter {
       const args = ['--headless', '--convert-to', 'pdf', '--outdir', workDir, inputFile];
       const outputFile = path.join(workDir, 'input.pdf');
 
+      await this.logSofficeDebugContext(args);
       console.log('Executing soffice command:', this.sofficeCommand, args);
 
       let stdout = '';

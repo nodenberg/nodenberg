@@ -1,5 +1,9 @@
 import JSZip from 'jszip';
-import { embedImagePlaceholders, PlaceholderImages } from './imagePlaceholderReplacer';
+import {
+  embedImagePlaceholders,
+  ImagePlaceholderInput,
+  PlaceholderImages,
+} from './imagePlaceholderReplacer';
 
 export type PlaceholderPrimitive = string | number | Date | null;
 export type PlaceholderObject = Record<string, unknown>;
@@ -11,6 +15,9 @@ export interface PlaceholderData {
 }
 
 export interface PlaceholderReplaceOptions {
+  /**
+   * Deprecated: top-level image map is no longer supported.
+   */
   images?: PlaceholderImages;
 }
 type LegacyArrayPlaceholder = {
@@ -50,6 +57,11 @@ type ImagePlaceholderBlock = {
   cellRef: string;
   startRow: number;
   endRow: number;
+};
+
+type SectionImageState = {
+  nextId: number;
+  images: PlaceholderImages;
 };
 /**
  * XML特殊文字をエスケープ（W3C準拠）
@@ -203,6 +215,21 @@ function stringifyPrimitiveValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (value instanceof Date) return formatDateValue(value);
   return String(value);
+}
+
+function isImagePlaceholderInput(value: unknown): value is ImagePlaceholderInput {
+  if (!isPlainObject(value)) return false;
+  if (typeof value.base64 !== 'string' || value.base64.trim() === '') return false;
+  if (typeof value.contentType !== 'string') return false;
+  return value.contentType.toLowerCase().startsWith('image/');
+}
+
+function buildGeneratedSectionImageToken(imageId: number): string {
+  return `__section_image_${imageId}`;
+}
+
+function buildImagePlaceholderText(imageKey: string): string {
+  return `{{%${imageKey}}}`;
 }
 
 function replacePrimitivePlaceholdersWithFirstRunStyle(
@@ -1349,13 +1376,24 @@ function renderRecordRowXml(params: {
   placeholderToIndices: Map<string, Set<number>>;
   sharedStringsXml: string;
   firstRunPropsByIndex: Map<number, string | null>;
+  sectionImageState: SectionImageState;
+  recordImageTokens: Map<string, string>;
 }): { rowXml: string; sharedStringsXml: string } {
   let rowXml = params.rowXml;
   let sharedStringsXml = params.sharedStringsXml;
 
   params.placeholders.forEach((ph) => {
     const rawValue = getNestedValue(params.item, ph.cellPath);
-    const stringValue = stringifyPrimitiveValue(rawValue);
+    let stringValue = stringifyPrimitiveValue(rawValue);
+    if (isImagePlaceholderInput(rawValue)) {
+      let imageToken = params.recordImageTokens.get(ph.placeholderKey);
+      if (!imageToken) {
+        imageToken = buildGeneratedSectionImageToken(params.sectionImageState.nextId++);
+        params.recordImageTokens.set(ph.placeholderKey, imageToken);
+        params.sectionImageState.images[imageToken] = rawValue;
+      }
+      stringValue = buildImagePlaceholderText(imageToken);
+    }
     const indices = params.placeholderToIndices.get(ph.placeholderKey);
     if (!indices) return;
 
@@ -1382,7 +1420,7 @@ function renderRecordRowXmlForEstimate(params: {
 
   params.placeholders.forEach((ph) => {
     const rawValue = getNestedValue(params.item, ph.cellPath);
-    const stringValue = stringifyPrimitiveValue(rawValue);
+    const stringValue = isImagePlaceholderInput(rawValue) ? '' : stringifyPrimitiveValue(rawValue);
     const indices = params.placeholderToIndices.get(ph.placeholderKey);
     if (!indices) return;
 
@@ -1567,6 +1605,10 @@ export class PlaceholderReplacer {
     data: PlaceholderData,
     options: PlaceholderReplaceOptions = {}
   ): Promise<Buffer> {
+    if (options.images && Object.keys(options.images).length > 0) {
+      throw new Error('Top-level "images" is no longer supported. Put image objects inside data section rows.');
+    }
+
     const zip = await JSZip.loadAsync(excelBuffer);
 
     const sharedStringsFile = zip.file('xl/sharedStrings.xml');
@@ -1589,12 +1631,20 @@ export class PlaceholderReplacer {
       .map((p) => parseSectionTablePlaceholderKey(p.key))
       .filter((p): p is SectionTablePlaceholder => p !== null);
 
+    if (placeholderInfo.some((p) => p.key.startsWith('%'))) {
+      throw new Error('Legacy image placeholder "{{%...}}" is no longer supported. Use image objects in section data instead.');
+    }
+
     if (legacyArrayPlaceholders.length > 0 && sectionTablePlaceholders.length > 0) {
       throw new Error('テンプレート内で旧配列記法（{{#...}}）と新記法（{{##section.table.cell}}）は混在できません');
     }
 
     let workbookXmlForPrintArea: string | null = null;
     let sheetEntries: SheetEntry[] = [];
+    const sectionImageState: SectionImageState = {
+      nextId: 1,
+      images: {},
+    };
 
     // Stage A-1: 新記法 ##section.table.cell
     if (sectionTablePlaceholders.length > 0) {
@@ -1861,6 +1911,7 @@ export class PlaceholderReplacer {
         let pageBreakInsertedRowsInBlock = 0;
 
         for (let blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
+          const recordImageTokens = new Map<string, string>();
           if (blockIndex > 0 && templateInfo) {
             const itemForEstimate = blockIndex < recordCount ? tableData[blockIndex] : {};
             const estimatedRecordHeight = estimateRecordBlockHeight({
@@ -1915,6 +1966,8 @@ export class PlaceholderReplacer {
               placeholderToIndices,
               sharedStringsXml,
               firstRunPropsByIndex,
+              sectionImageState,
+              recordImageTokens,
             });
 
             sharedStringsXml = rendered.sharedStringsXml;
@@ -1974,7 +2027,7 @@ export class PlaceholderReplacer {
       legacyInsertedRows = legacy.insertedRows;
     }
 
-    const imageKeys = new Set(Object.keys(options.images || {}));
+    const imageKeys = new Set(Object.keys(sectionImageState.images));
     if (imageKeys.size > 0) {
       const workbookFile = zip.file('xl/workbook.xml');
       const workbookRelsFile = zip.file('xl/_rels/workbook.xml.rels');
@@ -2097,7 +2150,7 @@ export class PlaceholderReplacer {
     replacedSharedStrings = await embedImagePlaceholders({
       zip,
       sharedStringsXml: replacedSharedStrings,
-      images: options.images,
+      images: sectionImageState.images,
     });
     // Stage C: 旧記法でのPrint_Area更新（sheet1想定の既存互換）
     if (legacyInsertedRows > 0 && !workbookXmlForPrintArea) {

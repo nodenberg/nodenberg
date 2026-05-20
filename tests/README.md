@@ -135,15 +135,14 @@ npx tsx tests/verify-section-table.ts
 ---
 
 #### `verify-image-placeholder.ts`
-**役割**: 画像差し込み、複数画像、リサイズ、ページまたぎ回避を検証
+**役割**: section 内画像差し込み、複数レコード画像、旧記法拒否を検証
 
 **検証項目**:
-1. 単体画像 `{{%logo}}` の埋め込み
-2. sharedStrings からの画像プレースホルダー除去
+1. 単体 section 画像 `{{##請求.明細.image}}` の埋め込み
+2. sharedStrings からの section 画像トークン除去
 3. drawing / media / rels の生成
-4. 比率維持リサイズ
-5. fixture ベースの複数画像差し込み
-6. 画像が改ページ境界をまたぐ場合の次ページ移動
+4. 同一プレースホルダ名での複数レコード画像差し込み
+5. 旧 `{{%...}}` 記法の拒否
 
 **実行方法**:
 ```bash
