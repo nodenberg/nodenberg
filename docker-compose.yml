@@ -3,6 +3,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-node:20-bookworm@sha256:abc255963bb4311b1f81bf45f2382df39a4041d2a975b1807d05809f1bc21bbe}
+        DEBIAN_SNAPSHOT: ${DEBIAN_SNAPSHOT:-20260324T000000Z}
+        LO_VERSION: ${LO_VERSION:-26.2.1}
+        LO_BASE_URL: ${LO_BASE_URL:-https://download.documentfoundation.org/libreoffice/stable/26.2.1/deb/x86_64}
+        LO_MAIN_ARCHIVE: ${LO_MAIN_ARCHIVE:-LibreOffice_26.2.1_Linux_x86-64_deb.tar.gz}
+        LO_MAIN_SHA256: ${LO_MAIN_SHA256:-9807363c8fabf79fc3562f606ce1673c4b29c3c53baca513f84e762845a093b2}
+        LO_LANGPACK_JA_ARCHIVE: ${LO_LANGPACK_JA_ARCHIVE:-LibreOffice_26.2.1_Linux_x86-64_deb_langpack_ja.tar.gz}
+        LO_LANGPACK_JA_SHA256: ${LO_LANGPACK_JA_SHA256:-bf2f212eac17226fa15f6ac7553d01ab6f6a13a9309b8fb320dafff372e43811}
     container_name: nodenberg-api
     ports:
       - "3200:3100"
@@ -11,6 +20,7 @@ services:
       - PORT=3100
       - API_KEY=${API_KEY:-default-secret-key-please-change-this}
       - DEBUG_IMAGE_LAYOUT=${DEBUG_IMAGE_LAYOUT:-false}
+      - DEBUG_SOFFICE_COMMAND=${DEBUG_SOFFICE_COMMAND:-false}
     # volumes:
       # Optional: Mount templates directory if needed
       # - ./templates:/app/templates:ro
