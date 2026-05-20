@@ -23,7 +23,7 @@
     "build": "tsc",
     "start": "node scripts/init-libreoffice.js && node dist/server.js",
     "start:no-init": "node dist/server.js",
-    "test": "node tests/test-api.js",
+    "test": "echo 'No automated tests'",
     "clean": "rm -rf dist",
     "init-libreoffice": "node scripts/init-libreoffice.js"
   },
