@@ -233,9 +233,9 @@ For `{{##section.table.cell}}`, the server treats the contiguous template rows f
 
 - Rows are duplicated per record while preserving cell style, merged cells, and formulas.
 - Section images are scaled with aspect ratio preserved and placed inside the target cell/range with a 2px inner padding on each side.
-- When a record would cross a page, blank rows are inserted before that record so it starts on the next page.
-- `Print_Area` is recalculated from the template's page settings and the generated sheet layout.
-- Blank rows inserted for a page break are kept inside the previous page's print area so the Excel file looks natural when opened directly.
+- Page layout is expressed the same way Excel does for manual printing: a single `Print_Area` range plus manual row breaks (`<rowBreaks>`), so the page break preview shows one print range with page-break lines inside it.
+- When a record would cross a page, a manual row break is placed before that record so it starts on the next page. No blank padding rows are inserted.
+- `Print_Area` keeps the template's column range and start row, and its end row is extended by the number of inserted rows.
 
 ## Contributing
 

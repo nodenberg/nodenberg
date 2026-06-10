@@ -163,9 +163,10 @@ async function verifySectionImagePlaceholderAcrossRecords() {
     throw new Error('embedded image content does not match section row input');
   }
 
+  // テンプレートA1:D30に1行挿入されるため、単一範囲のままA1:D31へ拡張される
   const printAreaMatch = workbookXml.match(/name="_xlnm\.Print_Area"[^>]*>([^<]*)<\/definedName>/);
   const printArea = printAreaMatch ? printAreaMatch[1] : '';
-  if (!printArea.includes('$A$1:$D$30')) {
+  if (printArea.includes(',') || !printArea.includes('$A$1:$D$31')) {
     throw new Error(`unexpected print area after section image generation: ${printArea}`);
   }
 }

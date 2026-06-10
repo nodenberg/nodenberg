@@ -93,26 +93,56 @@ Method:
 1. Detect contiguous row blocks per `section.table`.
 2. Duplicate the block based on record count.
 3. Add shared strings and update indices.
-4. Insert blank rows before a record when that record must start on a new page.
-5. Rebuild `Print_Area` automatically from the generated layout.
+4. Record each duplicated record block as a keep-together unit for pagination.
+5. Extend `Print_Area` (single range) and insert manual row breaks (`<rowBreaks>`) from the generated layout.
 
 Constraints:
 - Do not mix `{{#...}}` and `{{##...}}` in the same template.
 - Do not define duplicate blocks for the same section.
 
-## 5. Page break (`Print_Area`) update
+## 5. Page break (`Print_Area` + `rowBreaks`) update
 
-- Read `_xlnm.Print_Area` from `workbook.xml`.
-- Use the first range as the base column range and page start.
-- Read page settings from `sheetN.xml` such as paper size, orientation, margins, and fit-to-width settings.
-- Estimate effective page height from the template layout.
-- Rebuild ranges to match the generated rows after section-table expansion.
-- When a record would cross a page, insert blank rows before that record and keep those blank rows in the previous page range.
+Page layout is expressed the same way Excel does it for manual printing:
+a **single** `Print_Area` range plus **manual row breaks** in the worksheet XML.
+
+- Read `_xlnm.Print_Area` from `workbook.xml` and use the first range as the base.
+- Extend the end row of that single range by the number of inserted rows
+  (`startRow:endRow + insertedRows`). The range is never split into multiple
+  comma-separated areas — comma-separated areas are independent print areas in
+  OOXML and each one always starts a new page, which is not what manual page
+  breaks look like.
+- Read page settings from `sheetN.xml` such as paper size, orientation,
+  margins, and fit-to-width settings. The printable height is
+  `pageHeight - topMargin - bottomMargin`; header/footer margins are *inside*
+  the top/bottom margins in OOXML, so they do not reduce the content area.
+- Estimate row heights (after all placeholder replacement, so wrapped text is
+  measured with real values) and walk the rows, emitting a manual break
+  `<brk id="N" max="16383" man="1"/>` ("break after row N") whenever the next
+  row would exceed the page capacity.
+- Keep-together units (record blocks, image merge spans) are never split: if a
+  unit would cross the boundary, the break is placed before the unit instead.
+  No blank padding rows are inserted; the break itself starts the new page.
+- If a section spans multiple pages, the next section starts on a new page.
+- Manual breaks already present in the template are preserved and respected as
+  forced page boundaries.
+- When manual breaks are emitted, `fitToHeight` is forced to `0` because
+  fit-to-height scaling and manual breaks are mutually exclusive in Excel.
+
+The `<rowBreaks>` element is placed according to the `CT_Worksheet` element
+order (after `pageSetup` / `headerFooter`):
+
+```xml
+<rowBreaks count="2" manualBreakCount="2">
+  <brk id="48" max="16383" man="1"/>
+  <brk id="96" max="16383" man="1"/>
+</rowBreaks>
+```
 
 Implementation points:
-- `parseFirstPrintArea(...)`
-- `buildPrintAreasByHeight(...)`
-- `updatePrintAreaForSheet(...)`
+- `applyPaginationToSheet(...)`
+- `computeManualRowBreaks(...)`
+- `upsertRowBreaks(...)`
+- `parsePageLayoutInfo(...)`
 
 ### 5.1 Current limitations
 

@@ -1,7 +1,5 @@
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import * as fs from 'fs';
-import * as path from 'path';
 import { PlaceholderReplacer } from '../src/lib/placeholderReplacer';
 
 function getPrintArea(workbookXml: string): string {
@@ -183,45 +181,106 @@ async function verifyLegacyTableExpansion() {
   }
 }
 
-async function verifySectionPagingWithFixture() {
-  const projectRoot = path.resolve(process.cwd(), '..');
-  const templatePath = path.join(projectRoot, '06_test-assets', 'template_section_02_with-tall-cell.xlsx');
-  const requestPath = path.join(projectRoot, '06_test-assets', 'request_section_with-tall-cell.json');
+async function verifySectionPagingBreaks() {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('明細書');
 
-  const template = fs.readFileSync(templatePath);
-  const data = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+  ws.pageSetup = {
+    paperSize: 9,
+    orientation: 'portrait',
+    printArea: 'A1:D10',
+    margins: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+  };
+
+  ws.getCell('A1').value = 'タイトル {{会社名}}';
+  ws.getCell('A5').value = '{{##請求.明細.番号}}';
+  ws.getCell('B5').value = '{{##請求.明細.項目}}';
+  ws.getCell('A6').value = '{{##請求.明細.数量}}';
+  ws.getCell('B6').value = '{{##請求.明細.単価}}';
+  ws.getCell('C9').value = 'FOOTER';
+
+  const template = Buffer.from(await wb.xlsx.writeBuffer());
   const replacer = new PlaceholderReplacer();
-  const result = await replacer.replacePlaceholders(template, data);
+  const recordCount = 60;
+
+  const result = await replacer.replacePlaceholders(template, {
+    会社名: 'テスト株式会社',
+    請求: {
+      明細: Array.from({ length: recordCount }, (_, i) => ({
+        番号: i + 1,
+        項目: `品目${i + 1}`,
+        数量: i,
+        単価: 100 * i,
+      })),
+    },
+  });
 
   const zip = await JSZip.loadAsync(result);
   const workbookXml = await zip.file('xl/workbook.xml')?.async('string');
   const sheetXml = await zip.file('xl/worksheets/sheet1.xml')?.async('string');
 
   if (!workbookXml || !sheetXml) {
-    throw new Error('section paging fixture output is invalid');
+    throw new Error('section paging output is invalid');
   }
 
+  // Print_Areaは分割されず単一範囲のまま、挿入行数ぶん拡張される
+  const insertedRows = (recordCount - 1) * 2;
+  const expectedEndRow = 10 + insertedRows;
   const printArea = getPrintArea(workbookXml);
+  if (printArea.includes(',')) {
+    throw new Error(`print area must be a single range: ${printArea}`);
+  }
   const ranges = parsePrintAreaRanges(printArea);
-  if (ranges.length !== 2 || ranges[0].startRow !== 1 || ranges[0].endRow !== 37 || ranges[1].startRow !== 38 || ranges[1].endRow !== 69) {
+  if (ranges.length !== 1 || ranges[0].startRow !== 1 || ranges[0].endRow !== expectedEndRow) {
     throw new Error(`section paging print area is unexpected: ${printArea}`);
   }
 
-  if (!/<row[^>]*r="33"/.test(sheetXml) || !/<row[^>]*r="38"/.test(sheetXml) || !/<row[^>]*r="69"/.test(sheetXml)) {
-    throw new Error('section paging boundary rows are missing');
+  // 改ページは手動rowBreaksで表現される
+  const rowBreaksMatch = sheetXml.match(/<rowBreaks count="(\d+)" manualBreakCount="(\d+)">([\s\S]*?)<\/rowBreaks>/);
+  if (!rowBreaksMatch) {
+    throw new Error('manual rowBreaks are missing');
   }
 
-  [34, 35, 36, 37].forEach((row) => {
-    if (new RegExp(`<row[^>]*r="${row}"`).test(sheetXml)) {
-      throw new Error(`section paging gap row should be blank: r=${row}`);
+  const breakIds = Array.from(rowBreaksMatch[3].matchAll(/<brk id="(\d+)" max="16383" man="1"\/>/g))
+    .map((m) => Number(m[1]));
+  if (breakIds.length === 0 || breakIds.length !== Number(rowBreaksMatch[1]) || breakIds.length !== Number(rowBreaksMatch[2])) {
+    throw new Error(`rowBreaks count mismatch: ${rowBreaksMatch[0]}`);
+  }
+
+  // 改ページ位置はレコードブロック（2行）の境界に揃う（レコード行は5行目から2行刻み）
+  const lastRecordRow = 4 + recordCount * 2;
+  breakIds.forEach((id) => {
+    if (id < 1 || id >= expectedEndRow) {
+      throw new Error(`break id out of print area: ${id}`);
+    }
+    if (id >= 5 && id <= lastRecordRow && (id - 4) % 2 !== 0) {
+      throw new Error(`break splits a record block: id=${id}`);
     }
   });
+
+  // 各ページの行高さ合計がページ容量（A4縦 841.89pt - 上下マージン108pt）を超えない
+  const pageCapacity = 841.89 - 72 * 1.5;
+  const defaultRowHeight = 15;
+  const boundaries = [0, ...breakIds, expectedEndRow];
+  for (let i = 1; i < boundaries.length; i++) {
+    const rowsInPage = boundaries[i] - boundaries[i - 1];
+    if (rowsInPage * defaultRowHeight > pageCapacity + 0.000001) {
+      throw new Error(`page ${i} exceeds capacity: rows=${rowsInPage}`);
+    }
+  }
+
+  // 改ページ用の空白行パディングは挿入されない（レコード行はすべて連続して存在する）
+  for (let row = 5; row <= lastRecordRow; row++) {
+    if (!new RegExp(`<row[^>]*r="${row}"`).test(sheetXml)) {
+      throw new Error(`record row is missing (unexpected blank padding): r=${row}`);
+    }
+  }
 }
 
 async function main() {
   await verifySectionTableExpansion();
   await verifyLegacyTableExpansion();
-  await verifySectionPagingWithFixture();
+  await verifySectionPagingBreaks();
   console.log('verify-section-table: OK');
 }
 
