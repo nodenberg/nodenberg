@@ -99,6 +99,11 @@ Method:
 Constraints:
 - Do not mix `{{#...}}` and `{{##...}}` in the same template.
 - Do not define duplicate blocks for the same section.
+- Every row that contains a `{{##section.table.*}}` placeholder becomes part of
+  that record block and is duplicated per record. Keep table header rows free
+  of section placeholders, otherwise the header row is repeated for every
+  record. Static cells inside block rows are duplicated by design (use them
+  for per-record labels/frames).
 
 ## 5. Page break (`Print_Area` + `rowBreaks`) update
 

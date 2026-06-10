@@ -277,10 +277,197 @@ async function verifySectionPagingBreaks() {
   }
 }
 
+function countCellValues(ws: ExcelJS.Worksheet, predicate: (text: string) => boolean): number {
+  let count = 0;
+  ws.eachRow({ includeEmpty: false }, (row) => {
+    row.eachCell({ includeEmpty: false }, (cell) => {
+      if (predicate(String(cell.value ?? ''))) count += 1;
+    });
+  });
+  return count;
+}
+
+async function verifyTallSectionBlocks() {
+  const recordCount = 30;
+  const blockHeight = 5;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('工事台帳');
+
+  ws.pageSetup = {
+    paperSize: 9,
+    orientation: 'portrait',
+    printArea: 'A1:D12',
+    margins: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+  };
+
+  ws.getCell('A1').value = '◆工事台帳タイトル';
+  ws.getCell('A2').value = '{{会社名}}';
+  ws.getCell('A4').value = '◆一覧ヘッダー';
+
+  // 1レコード5行のブロック（行5〜9）
+  ws.getCell('A5').value = '{{##工事.明細.番号}}';
+  ws.getCell('B5').value = '{{##工事.明細.名称}}';
+  ws.getCell('B6').value = '{{##工事.明細.担当}}';
+  ws.getCell('C7').value = '{{##工事.明細.数量}}';
+  ws.getCell('D8').value = '{{##工事.明細.金額}}';
+  ws.getCell('B9').value = '{{##工事.明細.備考}}';
+
+  ws.getCell('A11').value = '◆フッター';
+
+  const template = Buffer.from(await wb.xlsx.writeBuffer());
+  const replacer = new PlaceholderReplacer();
+
+  const result = await replacer.replacePlaceholders(template, {
+    会社名: 'テスト株式会社',
+    工事: {
+      明細: Array.from({ length: recordCount }, (_, i) => ({
+        番号: i + 1,
+        名称: `工事${i + 1}`,
+        担当: `担当${i + 1}`,
+        数量: i + 1,
+        金額: (i + 1) * 1000,
+        備考: `備考${i + 1}`,
+      })),
+    },
+  });
+
+  const zip = await JSZip.loadAsync(result);
+  const workbookXml = await zip.file('xl/workbook.xml')?.async('string');
+  const sheetXml = await zip.file('xl/worksheets/sheet1.xml')?.async('string');
+  if (!workbookXml || !sheetXml) {
+    throw new Error('tall section output is invalid');
+  }
+
+  const insertedRows = (recordCount - 1) * blockHeight;
+  const printArea = getPrintArea(workbookXml);
+  if (printArea.includes(',') || !printArea.includes(`$A$1:$D$${12 + insertedRows}`)) {
+    throw new Error(`tall section print area is unexpected: ${printArea}`);
+  }
+
+  // 改ページは5行ブロックの境界に揃う（レコード行は5行目から5行刻み）
+  const lastRecordRow = 4 + recordCount * blockHeight;
+  const breakIds = Array.from(
+    (sheetXml.match(/<rowBreaks[^>]*>([\s\S]*?)<\/rowBreaks>/)?.[1] || '').matchAll(/\bid="(\d+)"/g)
+  ).map((m) => Number(m[1]));
+  if (breakIds.length === 0) {
+    throw new Error('tall section rowBreaks are missing');
+  }
+  breakIds.forEach((id) => {
+    if (id >= 5 && id <= lastRecordRow && (id - 4) % blockHeight !== 0) {
+      throw new Error(`break splits a tall record block: id=${id}`);
+    }
+  });
+
+  // 読み戻して、ヘッダー/フッター/タイトルが複製されていないこと、各レコードが1回ずつ存在することを確認
+  const readBack = new ExcelJS.Workbook();
+  await readBack.xlsx.load(result as unknown as ArrayBuffer);
+  const sheet = readBack.getWorksheet('工事台帳');
+  if (!sheet) throw new Error('tall section sheet is missing');
+
+  [['◆工事台帳タイトル', 1], ['◆一覧ヘッダー', 1], ['◆フッター', 1]].forEach(([text, expected]) => {
+    const count = countCellValues(sheet, (v) => v === text);
+    if (count !== expected) {
+      throw new Error(`"${text}" should appear ${expected} time(s), got ${count}`);
+    }
+  });
+
+  for (let i = 1; i <= recordCount; i++) {
+    const count = countCellValues(sheet, (v) => v === `工事${i}`);
+    if (count !== 1) {
+      throw new Error(`record 工事${i} should appear once, got ${count}`);
+    }
+  }
+}
+
+async function verifySingleRowSectionBlocks() {
+  const recordCount = 100;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('名簿');
+
+  ws.pageSetup = {
+    paperSize: 9,
+    orientation: 'portrait',
+    printArea: 'A1:C8',
+    margins: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+  };
+
+  ws.getCell('A1').value = '◆名簿タイトル';
+  ws.getCell('A4').value = '◆No.ヘッダー';
+  ws.getCell('B4').value = '◆氏名ヘッダー';
+
+  // 1レコード1行のブロック（行5）
+  ws.getCell('A5').value = '{{##名簿.行.番号}}';
+  ws.getCell('B5').value = '{{##名簿.行.氏名}}';
+
+  ws.getCell('A7').value = '◆フッター';
+
+  const template = Buffer.from(await wb.xlsx.writeBuffer());
+  const replacer = new PlaceholderReplacer();
+
+  const result = await replacer.replacePlaceholders(template, {
+    名簿: {
+      行: Array.from({ length: recordCount }, (_, i) => ({
+        番号: i + 1,
+        氏名: `会員${i + 1}`,
+      })),
+    },
+  });
+
+  const zip = await JSZip.loadAsync(result);
+  const workbookXml = await zip.file('xl/workbook.xml')?.async('string');
+  const sheetXml = await zip.file('xl/worksheets/sheet1.xml')?.async('string');
+  if (!workbookXml || !sheetXml) {
+    throw new Error('single-row section output is invalid');
+  }
+
+  const insertedRows = recordCount - 1;
+  const printArea = getPrintArea(workbookXml);
+  if (printArea.includes(',') || !printArea.includes(`$A$1:$C$${8 + insertedRows}`)) {
+    throw new Error(`single-row section print area is unexpected: ${printArea}`);
+  }
+
+  // レコード行（5〜104）がすべて存在し、改ページ用の空白パディングがないこと
+  const lastRecordRow = 4 + recordCount;
+  for (let row = 5; row <= lastRecordRow; row++) {
+    if (!new RegExp(`<row[^>]*r="${row}"`).test(sheetXml)) {
+      throw new Error(`single-row record row is missing: r=${row}`);
+    }
+  }
+
+  const breakIds = Array.from(
+    (sheetXml.match(/<rowBreaks[^>]*>([\s\S]*?)<\/rowBreaks>/)?.[1] || '').matchAll(/\bid="(\d+)"/g)
+  ).map((m) => Number(m[1]));
+  if (breakIds.length === 0) {
+    throw new Error('single-row section rowBreaks are missing');
+  }
+
+  // 読み戻して、ヘッダー/タイトル/フッターが複製されていないことを確認
+  const readBack = new ExcelJS.Workbook();
+  await readBack.xlsx.load(result as unknown as ArrayBuffer);
+  const sheet = readBack.getWorksheet('名簿');
+  if (!sheet) throw new Error('single-row section sheet is missing');
+
+  ['◆名簿タイトル', '◆No.ヘッダー', '◆氏名ヘッダー', '◆フッター'].forEach((text) => {
+    const count = countCellValues(sheet, (v) => v === text);
+    if (count !== 1) {
+      throw new Error(`"${text}" should appear once, got ${count} (header duplicated?)`);
+    }
+  });
+
+  for (let i = 1; i <= recordCount; i++) {
+    const count = countCellValues(sheet, (v) => v === `会員${i}`);
+    if (count !== 1) {
+      throw new Error(`record 会員${i} should appear once, got ${count}`);
+    }
+  }
+}
+
 async function main() {
   await verifySectionTableExpansion();
   await verifyLegacyTableExpansion();
   await verifySectionPagingBreaks();
+  await verifyTallSectionBlocks();
+  await verifySingleRowSectionBlocks();
   console.log('verify-section-table: OK');
 }
 
