@@ -589,11 +589,6 @@ function collectFirstRunPropertiesBySharedStringIndex(
   return result;
 }
 
-function getPrintAreaFromWorkbookXml(workbookXml: string): string | null {
-  const m = workbookXml.match(/name="_xlnm\.Print_Area"[^>]*>([^<]+)<\/definedName>/);
-  return m ? m[1] : null;
-}
-
 function parseFirstPrintArea(printAreaValue: string): {
   sheetPrefix: string;
   startCol: string;
@@ -657,13 +652,6 @@ type PageLayoutInfo = {
   columnWidthByIndex: Map<number, number>;
 };
 
-type PrintAreaTemplateInfo = {
-  firstRange: PrintAreaRange;
-  basePageHeight: number;
-  defaultRowHeight: number;
-  layoutInfo: PageLayoutInfo;
-};
-
 function parsePrintAreaRanges(printAreaValue: string): PrintAreaRange[] {
   return printAreaValue
     .split(',')
@@ -696,46 +684,6 @@ function parseDefaultRowHeight(sheetXml: string): number {
 function parseDefaultColWidth(sheetXml: string): number {
   const m = sheetXml.match(/<sheetFormatPr\b[^>]*\bdefaultColWidth="([\d.]+)"/);
   return m ? Number(m[1]) : 8.43;
-}
-
-function buildRowHeightMap(sheetXml: string): Map<number, number> {
-  const result = new Map<number, number>();
-  const rowRegex = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = rowRegex.exec(sheetXml)) !== null) {
-    const rowNumber = Number(match[1]);
-    const rowTag = match[0];
-    const htMatch = rowTag.match(/\bht="([\d.]+)"/);
-    if (!htMatch) continue;
-    result.set(rowNumber, Number(htMatch[1]));
-  }
-
-  return result;
-}
-
-function getMaxRowNumber(sheetXml: string): number {
-  const rowRegex = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
-  let maxRow = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = rowRegex.exec(sheetXml)) !== null) {
-    maxRow = Math.max(maxRow, Number(match[1]));
-  }
-
-  return maxRow;
-}
-
-function buildExistingRowSet(sheetXml: string): Set<number> {
-  const rows = new Set<number>();
-  const rowRegex = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = rowRegex.exec(sheetXml)) !== null) {
-    rows.add(Number(match[1]));
-  }
-
-  return rows;
 }
 
 function parseColumnWidthMap(sheetXml: string): Map<number, number> {
@@ -818,11 +766,10 @@ function parsePageLayoutInfo(sheetXml: string, range: PrintAreaRange): PageLayou
   const right = Number(pageMarginsTag.match(/\bright="([\d.]+)"/)?.[1] || '0.7') * 72;
   const top = Number(pageMarginsTag.match(/\btop="([\d.]+)"/)?.[1] || '0.75') * 72;
   const bottom = Number(pageMarginsTag.match(/\bbottom="([\d.]+)"/)?.[1] || '0.75') * 72;
-  const header = Number(pageMarginsTag.match(/\bheader="([\d.]+)"/)?.[1] || '0.3') * 72;
-  const footer = Number(pageMarginsTag.match(/\bfooter="([\d.]+)"/)?.[1] || '0.3') * 72;
 
+  // ヘッダー/フッターはtop/bottomマージンの内側に描画されるため、本文領域の計算には含めない
   const printableWidthPoints = Math.max(1, pageWidthPoints - left - right);
-  const printableHeightPoints = Math.max(1, pageHeightPoints - top - bottom - header - footer);
+  const printableHeightPoints = Math.max(1, pageHeightPoints - top - bottom);
 
   const startColIndex = columnNameToIndex(range.startCol);
   const endColIndex = columnNameToIndex(range.endCol);
@@ -1046,147 +993,184 @@ function buildEffectiveRowHeightMap(
   return result;
 }
 
-function sumRowHeights(
-  startRow: number,
-  endRow: number,
-  rowHeights: Map<number, number>,
-  defaultRowHeight: number
-): number {
-  if (endRow < startRow) return 0;
-
-  let sum = 0;
-  for (let row = startRow; row <= endRow; row++) {
-    sum += rowHeights.get(row) ?? defaultRowHeight;
-  }
-  return sum;
-}
-
-function buildPrintAreasByHeight(params: {
-  sheetPrefix: string;
-  startCol: string;
+type KeepTogetherUnit = {
   startRow: number;
-  endCol: string;
-  contentEndRow: number;
-  basePageHeight: number;
-  rowHeights: Map<number, number>;
-  defaultRowHeight: number;
-  existingRows?: Set<number>;
-}): string {
-  if (params.contentEndRow < params.startRow) {
-    return `${params.sheetPrefix}!$${params.startCol}$${params.startRow}:$${params.endCol}$${params.startRow}`;
+  endRow: number;
+};
+
+function mergeKeepTogetherUnits(units: KeepTogetherUnit[]): KeepTogetherUnit[] {
+  const sorted = [...units].sort((a, b) => a.startRow - b.startRow);
+  const merged: KeepTogetherUnit[] = [];
+
+  for (const unit of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && unit.startRow <= last.endRow) {
+      last.endRow = Math.max(last.endRow, unit.endRow);
+    } else {
+      merged.push({ ...unit });
+    }
   }
 
-  if (params.basePageHeight <= 0) {
-    return `${params.sheetPrefix}!$${params.startCol}$${params.startRow}:$${params.endCol}$${params.contentEndRow}`;
-  }
-
-  const ranges: string[] = [];
-  let currentStart = params.startRow;
-
-  while (currentStart <= params.contentEndRow) {
-    let currentHeight = 0;
-    let currentEnd = currentStart;
-
-    while (currentEnd <= params.contentEndRow) {
-      const rawRowHeight = params.rowHeights.get(currentEnd) ?? params.defaultRowHeight;
-      const rowHeight = rawRowHeight > 0 ? rawRowHeight : 1;
-      if (currentEnd > currentStart && currentHeight + rowHeight > params.basePageHeight) {
-        currentEnd -= 1;
-        break;
-      }
-      currentHeight += rowHeight;
-      currentEnd += 1;
-
-      if (currentHeight >= params.basePageHeight) {
-        currentEnd -= 1;
-        break;
-      }
-    }
-
-    if (currentEnd > params.contentEndRow) {
-      currentEnd = params.contentEndRow;
-    }
-
-    if (currentEnd < currentStart) {
-      currentEnd = currentStart;
-    }
-
-    if (params.existingRows && params.existingRows.size > 0) {
-      while (currentEnd < params.contentEndRow && !params.existingRows.has(currentEnd + 1)) {
-        currentEnd += 1;
-      }
-    }
-
-    ranges.push(`${params.sheetPrefix}!$${params.startCol}$${currentStart}:$${params.endCol}$${currentEnd}`);
-    currentStart = currentEnd + 1;
-  }
-
-  return ranges.join(',');
+  return merged;
 }
 
-function sumRowHeightsBeforeRow(
-  rowExclusive: number,
-  startRow: number,
-  rowHeights: Map<number, number>,
-  defaultRowHeight: number
-): number {
-  if (rowExclusive <= startRow) return 0;
+/**
+ * 印刷範囲内の手動改ページ位置を計算する。
+ * 返り値はOOXMLのrowBreaks仕様（id=N で「N行目の直後で改ページ」）に合わせた行番号。
+ * - units: レコードブロックなどページをまたいではいけない行塊
+ * - sections: セクション全体の行範囲。前のセクションがページをまたいだ場合、次のセクションは新しいページから開始する
+ * - forcedBreakIds: テンプレート由来の既存手動改ページ
+ */
+function computeManualRowBreaks(params: {
+  startRow: number;
+  endRow: number;
+  pageCapacity: number;
+  rowHeights: Map<number, number>;
+  defaultRowHeight: number;
+  units: KeepTogetherUnit[];
+  sections: KeepTogetherUnit[];
+  forcedBreakIds: Set<number>;
+}): number[] {
+  const EPS = 0.000001;
+  if (params.pageCapacity <= 0 || params.endRow < params.startRow) return [];
 
-  let sum = 0;
-  for (let row = startRow; row < rowExclusive; row++) {
-    sum += rowHeights.get(row) ?? defaultRowHeight;
+  const unitByRow = new Map<number, KeepTogetherUnit>();
+  mergeKeepTogetherUnits(params.units).forEach((unit) => {
+    for (let row = unit.startRow; row <= unit.endRow; row++) {
+      unitByRow.set(row, unit);
+    }
+  });
+
+  const sections = [...params.sections].sort((a, b) => a.startRow - b.startRow);
+  let sectionIndex = 0;
+  let activeSection: KeepTogetherUnit | null = null;
+  let activeSectionCrossed = false;
+  let prevSectionCrossed = false;
+
+  const breaks: number[] = [];
+  let pageStart = params.startRow;
+  let used = 0;
+
+  const heightOf = (row: number): number => {
+    const height = params.rowHeights.get(row) ?? params.defaultRowHeight;
+    return height > 0 ? height : 1;
+  };
+  const markSectionCrossing = (breakRow: number): void => {
+    if (activeSection && breakRow >= activeSection.startRow && breakRow < activeSection.endRow) {
+      activeSectionCrossed = true;
+    }
+  };
+
+  for (let row = params.startRow; row <= params.endRow; row++) {
+    if (activeSection && row > activeSection.endRow) {
+      prevSectionCrossed = activeSectionCrossed;
+      activeSection = null;
+      activeSectionCrossed = false;
+    }
+
+    if (row > params.startRow && params.forcedBreakIds.has(row - 1)) {
+      markSectionCrossing(row - 1);
+      pageStart = row;
+      used = 0;
+    }
+
+    if (sectionIndex < sections.length && row === sections[sectionIndex].startRow) {
+      if (prevSectionCrossed && row !== pageStart) {
+        breaks.push(row - 1);
+        pageStart = row;
+        used = 0;
+      }
+      activeSection = sections[sectionIndex];
+      activeSectionCrossed = false;
+      sectionIndex += 1;
+    }
+
+    const rowHeight = heightOf(row);
+    if (used > 0 && used + rowHeight > params.pageCapacity + EPS) {
+      const unit = unitByRow.get(row);
+      if (unit && unit.startRow <= pageStart) {
+        // ページ先頭から始まる塊がページ容量を超える場合は分割を諦めて流し込む
+        used += rowHeight;
+      } else if (unit && unit.startRow < row) {
+        // 塊の途中で溢れた場合は塊全体を次ページへ送る
+        breaks.push(unit.startRow - 1);
+        markSectionCrossing(unit.startRow - 1);
+        pageStart = unit.startRow;
+        used = 0;
+        for (let unitRow = unit.startRow; unitRow <= row; unitRow++) {
+          used += heightOf(unitRow);
+        }
+      } else {
+        breaks.push(row - 1);
+        markSectionCrossing(row - 1);
+        pageStart = row;
+        used = rowHeight;
+      }
+    } else {
+      used += rowHeight;
+    }
   }
-  return sum;
+
+  return breaks;
 }
 
-function doesSectionOverflowPages(params: {
-  sectionStartRow: number;
-  sectionEndRow: number;
-  pageStartRow: number;
-  basePageHeight: number;
-  rowHeights: Map<number, number>;
-  defaultRowHeight: number;
-}): boolean {
-  if (params.sectionEndRow < params.sectionStartRow) return false;
-  if (params.basePageHeight <= 0) return false;
+function parseManualRowBreakIds(sheetXml: string): number[] {
+  const block = sheetXml.match(/<rowBreaks\b[^>]*>([\s\S]*?)<\/rowBreaks>/);
+  if (!block) return [];
 
-  const startHeight = sumRowHeightsBeforeRow(
-    params.sectionStartRow,
-    params.pageStartRow,
-    params.rowHeights,
-    params.defaultRowHeight
-  );
-  const endHeightExclusive = sumRowHeightsBeforeRow(
-    params.sectionEndRow + 1,
-    params.pageStartRow,
-    params.rowHeights,
-    params.defaultRowHeight
-  );
-  const startPage = Math.floor(startHeight / params.basePageHeight);
-  const endPage = Math.floor(Math.max(0, endHeightExclusive - 0.000001) / params.basePageHeight);
-  return endPage > startPage;
+  const ids: number[] = [];
+  for (const match of block[1].matchAll(/<(?:brk|rowBreak)\b[^>]*\bid="(\d+)"[^>]*\/>/g)) {
+    ids.push(Number(match[1]));
+  }
+  return ids;
 }
 
-function calculateBlankRowsToNextPageStart(params: {
-  nextSectionStartRow: number;
-  pageStartRow: number;
-  basePageHeight: number;
-  rowHeights: Map<number, number>;
-  defaultRowHeight: number;
-}): number {
-  if (params.basePageHeight <= 0 || params.defaultRowHeight <= 0) return 0;
+function upsertRowBreaks(sheetXml: string, breakIds: number[]): string {
+  const ids = Array.from(new Set(breakIds))
+    .filter((id) => id >= 1)
+    .sort((a, b) => a - b);
+  if (ids.length === 0) return sheetXml;
 
-  const usedHeight = sumRowHeightsBeforeRow(
-    params.nextSectionStartRow,
-    params.pageStartRow,
-    params.rowHeights,
-    params.defaultRowHeight
-  );
-  const remainder = usedHeight % params.basePageHeight;
-  if (remainder === 0) return 0;
+  const content = ids.map((id) => `<brk id="${id}" max="16383" man="1"/>`).join('');
+  const element = `<rowBreaks count="${ids.length}" manualBreakCount="${ids.length}">${content}</rowBreaks>`;
 
-  const remaining = params.basePageHeight - remainder;
-  return Math.max(1, Math.ceil(remaining / params.defaultRowHeight));
+  if (/<rowBreaks\b[^>]*>[\s\S]*?<\/rowBreaks>/.test(sheetXml)) {
+    return sheetXml.replace(/<rowBreaks\b[^>]*>[\s\S]*?<\/rowBreaks>/, element);
+  }
+  if (/<rowBreaks\b[^>]*\/>/.test(sheetXml)) {
+    return sheetXml.replace(/<rowBreaks\b[^>]*\/>/, element);
+  }
+
+  // CT_Worksheetの要素順（... pageMargins, pageSetup, headerFooter, rowBreaks ...）に従って挿入
+  const insertAfterPatterns = [
+    /<\/headerFooter>/,
+    /<headerFooter\b[^>]*\/>/,
+    /<pageSetup\b[^>]*\/>/,
+    /<pageMargins\b[^>]*\/>/,
+  ];
+  for (const pattern of insertAfterPatterns) {
+    const match = sheetXml.match(pattern);
+    if (match) {
+      return sheetXml.replace(match[0], `${match[0]}${element}`);
+    }
+  }
+
+  if (/<colBreaks\b/.test(sheetXml)) {
+    return sheetXml.replace(/<colBreaks\b/, `${element}<colBreaks`);
+  }
+  if (/<drawing\b/.test(sheetXml)) {
+    return sheetXml.replace(/<drawing\b/, `${element}<drawing`);
+  }
+  return sheetXml.replace('</worksheet>', `${element}</worksheet>`);
+}
+
+function disableFitToHeight(sheetXml: string): string {
+  return sheetXml.replace(/<pageSetup\b[^>]*\/>/, (tag) => {
+    const fitToHeightMatch = tag.match(/\bfitToHeight="(\d+)"/);
+    if (!fitToHeightMatch || Number(fitToHeightMatch[1]) === 0) return tag;
+    // 手動改ページと縦方向のページ収め縮小は両立しないため無効化する
+    return tag.replace(/\bfitToHeight="\d+"/, 'fitToHeight="0"');
+  });
 }
 
 function getFirstPrintAreaForSheet(
@@ -1273,15 +1257,69 @@ function parseWorkbookSheets(workbookXml: string, workbookRelsXml: string): Shee
   });
 }
 
-function updatePrintAreaForSheet(
-  workbookXml: string,
-  targetSheetName: string,
-  targetSheetIndex: number,
-  sheetXml: string,
-  sharedStrings: string[],
-  styleCatalog: StyleCatalog
-): string {
-  return workbookXml.replace(
+/**
+ * 印刷範囲を単一範囲に保ったまま、手動改ページ（rowBreaks）でページ割りを表現する。
+ * - Print_Area: テンプレートの先頭範囲を行挿入数ぶん下に伸ばした単一範囲に更新
+ * - rowBreaks: 行高さの見積もりから改ページ位置を計算してシートXMLへ挿入
+ */
+function applyPaginationToSheet(params: {
+  workbookXml: string;
+  sheetXml: string;
+  targetSheetName: string;
+  targetSheetIndex: number;
+  insertedRows: number;
+  sharedStrings: string[];
+  styleCatalog: StyleCatalog;
+  units: KeepTogetherUnit[];
+  sections: KeepTogetherUnit[];
+}): { workbookXml: string; sheetXml: string } {
+  const firstRange = getFirstPrintAreaForSheet(
+    params.workbookXml,
+    params.targetSheetName,
+    params.targetSheetIndex
+  );
+  if (!firstRange) {
+    return { workbookXml: params.workbookXml, sheetXml: params.sheetXml };
+  }
+
+  const layoutInfo = parsePageLayoutInfo(params.sheetXml, firstRange);
+  const pageCapacity = layoutInfo.pageHeightCapacityPoints;
+  if (pageCapacity <= 0) {
+    return { workbookXml: params.workbookXml, sheetXml: params.sheetXml };
+  }
+
+  const endRow = Math.max(firstRange.endRow + Math.max(0, params.insertedRows), firstRange.startRow);
+  const rowHeights = buildEffectiveRowHeightMap(
+    params.sheetXml,
+    params.sharedStrings,
+    params.styleCatalog,
+    layoutInfo
+  );
+  const existingBreakIds = parseManualRowBreakIds(params.sheetXml);
+  const forcedBreakIds = new Set(
+    existingBreakIds.filter((id) => id >= firstRange.startRow && id < endRow)
+  );
+
+  const computedBreaks = computeManualRowBreaks({
+    startRow: firstRange.startRow,
+    endRow,
+    pageCapacity,
+    rowHeights,
+    defaultRowHeight: layoutInfo.defaultRowHeight,
+    units: params.units,
+    sections: params.sections,
+    forcedBreakIds,
+  });
+
+  let sheetXml = params.sheetXml;
+  if (computedBreaks.length > 0) {
+    sheetXml = upsertRowBreaks(sheetXml, [...existingBreakIds, ...computedBreaks]);
+    sheetXml = disableFitToHeight(sheetXml);
+  }
+
+  const newValue =
+    `${firstRange.sheetPrefix}!$${firstRange.startCol}$${firstRange.startRow}:$${firstRange.endCol}$${endRow}`;
+  const workbookXml = params.workbookXml.replace(
     /(<definedName\b[^>]*name="_xlnm\.Print_Area"[^>]*>)([^<]*)(<\/definedName>)/g,
     (full, openTag: string, value: string, closeTag: string) => {
       const localSheetIdMatch = openTag.match(/\blocalSheetId="(\d+)"/);
@@ -1292,40 +1330,16 @@ function updatePrintAreaForSheet(
 
       const sheetNameFromValue = normalizeSheetPrefix(parsed.sheetPrefix);
       const isTarget =
-        (localSheetId !== null && localSheetId === targetSheetIndex) ||
-        sheetNameFromValue === targetSheetName;
+        (localSheetId !== null && localSheetId === params.targetSheetIndex) ||
+        sheetNameFromValue === params.targetSheetName;
 
       if (!isTarget) return full;
-
-      const parsedRanges = parsePrintAreaRanges(value);
-      if (parsedRanges.length === 0) return full;
-
-      const firstRange = parsedRanges[0];
-      const contentEndRow = Math.max(getMaxRowNumber(sheetXml), firstRange.endRow);
-      const existingRows = buildExistingRowSet(sheetXml);
-      const layoutInfo = parsePageLayoutInfo(sheetXml, firstRange);
-      const rowHeights = buildEffectiveRowHeightMap(sheetXml, sharedStrings, styleCatalog, layoutInfo);
-      const basePageHeight = layoutInfo.pageHeightCapacityPoints;
-
-      if (basePageHeight <= 0 || contentEndRow < firstRange.startRow) {
-        return full;
-      }
-
-      const newValue = buildPrintAreasByHeight({
-        sheetPrefix: firstRange.sheetPrefix,
-        startCol: firstRange.startCol,
-        startRow: firstRange.startRow,
-        endCol: firstRange.endCol,
-        contentEndRow,
-        basePageHeight,
-        rowHeights,
-        defaultRowHeight: layoutInfo.defaultRowHeight,
-        existingRows,
-      });
 
       return `${openTag}${newValue}${closeTag}`;
     }
   );
+
+  return { workbookXml, sheetXml };
 }
 
 function getNestedValue(source: unknown, path: string): unknown {
@@ -1405,75 +1419,6 @@ function renderRecordRowXml(params: {
   });
 
   return { rowXml, sharedStringsXml };
-}
-
-function renderRecordRowXmlForEstimate(params: {
-  rowXml: string;
-  rowNumber: number;
-  item: Record<string, unknown>;
-  placeholders: SectionTablePlaceholder[];
-  placeholderToIndices: Map<string, Set<number>>;
-  sharedStrings: string[];
-}): { rowXml: string; sharedStrings: string[] } {
-  let rowXml = params.rowXml;
-  const sharedStrings = [...params.sharedStrings];
-
-  params.placeholders.forEach((ph) => {
-    const rawValue = getNestedValue(params.item, ph.cellPath);
-    const stringValue = isImagePlaceholderInput(rawValue) ? '' : stringifyPrimitiveValue(rawValue);
-    const indices = params.placeholderToIndices.get(ph.placeholderKey);
-    if (!indices) return;
-
-    indices.forEach((oldIndex) => {
-      const newIndex = sharedStrings.length;
-      sharedStrings.push(stringValue);
-      rowXml = replaceSharedStringIndexInRow(rowXml, params.rowNumber, oldIndex, newIndex);
-    });
-  });
-
-  return { rowXml, sharedStrings };
-}
-
-function estimateRecordBlockHeight(params: {
-  sheetXml: string;
-  startRow: number;
-  blockHeight: number;
-  item: Record<string, unknown>;
-  placeholders: SectionTablePlaceholder[];
-  placeholderToIndices: Map<string, Set<number>>;
-  sharedStrings: string[];
-  styleCatalog: StyleCatalog;
-  layoutInfo: PageLayoutInfo;
-}): number {
-  const mergeSpans = parseMergeSpans(params.sheetXml);
-  let previewSharedStrings = [...params.sharedStrings];
-  let totalHeight = 0;
-
-  for (let offset = 0; offset < params.blockHeight; offset++) {
-    const rowNumber = params.startRow + offset;
-    const rowXml = extractRowXml(params.sheetXml, rowNumber);
-    if (!rowXml) continue;
-
-    const rendered = renderRecordRowXmlForEstimate({
-      rowXml,
-      rowNumber,
-      item: params.item,
-      placeholders: params.placeholders,
-      placeholderToIndices: params.placeholderToIndices,
-      sharedStrings: previewSharedStrings,
-    });
-
-    previewSharedStrings = rendered.sharedStrings;
-    totalHeight += estimateRowRenderedHeight(
-      rendered.rowXml,
-      previewSharedStrings,
-      params.styleCatalog,
-      params.layoutInfo,
-      mergeSpans
-    );
-  }
-
-  return totalHeight;
 }
 
 function applyLegacyArrayExpansion(
@@ -1641,6 +1586,9 @@ export class PlaceholderReplacer {
 
     let workbookXmlForPrintArea: string | null = null;
     let sheetEntries: SheetEntry[] = [];
+    const sheetOffsetByPath = new Map<string, number>();
+    const unitsBySheetPath = new Map<string, KeepTogetherUnit[]>();
+    const sectionsBySheetPath = new Map<string, KeepTogetherUnit[]>();
     const sectionImageState: SectionImageState = {
       nextId: 1,
       images: {},
@@ -1655,7 +1603,6 @@ export class PlaceholderReplacer {
       }
 
       workbookXmlForPrintArea = await workbookFile.async('string');
-      const templateWorkbookXmlForPrintArea = workbookXmlForPrintArea;
       const workbookRelsXml = await workbookRelsFile.async('string');
       sheetEntries = parseWorkbookSheets(workbookXmlForPrintArea, workbookRelsXml).filter((s) => !!s.path);
 
@@ -1760,38 +1707,6 @@ export class PlaceholderReplacer {
         return a.startRow - b.startRow;
       });
 
-      const printAreaTemplateInfoBySheetPath = new Map<string, PrintAreaTemplateInfo>();
-      for (const block of blocks) {
-        if (printAreaTemplateInfoBySheetPath.has(block.sheetPath)) continue;
-
-        const templateSheetXml = templateSheetXmlByPath.get(block.sheetPath);
-        if (!templateSheetXml) continue;
-
-        const firstRange = getFirstPrintAreaForSheet(
-          templateWorkbookXmlForPrintArea,
-          block.sheetName,
-          block.sheetIndex
-        );
-        if (!firstRange) continue;
-
-        const layoutInfo = parsePageLayoutInfo(templateSheetXml, firstRange);
-        const defaultRowHeight = layoutInfo.defaultRowHeight;
-        const basePageHeight = layoutInfo.pageHeightCapacityPoints;
-
-        if (basePageHeight <= 0) continue;
-
-        printAreaTemplateInfoBySheetPath.set(block.sheetPath, {
-          firstRange,
-          basePageHeight,
-          defaultRowHeight,
-          layoutInfo,
-        });
-      }
-
-      const sheetOffsetByPath = new Map<string, number>();
-      const prevSectionSpanBySheetPath = new Map<string, { startRow: number; endRow: number }>();
-      const pageUsedHeightBySheetPath = new Map<string, number>();
-
       for (const block of blocks) {
         const sheetFile = zip.file(block.sheetPath);
         if (!sheetFile) {
@@ -1802,61 +1717,9 @@ export class PlaceholderReplacer {
         const tableData = getTableData(data, block.section, block.table);
         const recordCount = tableData.length;
 
-        let totalInsertedRowsForPrintArea = 0;
         const currentOffset = sheetOffsetByPath.get(block.sheetPath) || 0;
-        let currentStartRow = block.startRow + currentOffset;
-        let currentEndRow = block.endRow + currentOffset;
-        const templateInfo = printAreaTemplateInfoBySheetPath.get(block.sheetPath);
-        let currentSharedStrings = extractSharedStrings(sharedStringsXml);
-        let currentRowHeights = templateInfo
-          ? buildEffectiveRowHeightMap(sheetXml, currentSharedStrings, styleCatalog, templateInfo.layoutInfo)
-          : buildRowHeightMap(sheetXml);
-        let currentPageUsedHeight = templateInfo
-          ? pageUsedHeightBySheetPath.get(block.sheetPath) ??
-            sumRowHeights(
-              templateInfo.firstRange.startRow,
-              currentStartRow - 1,
-              currentRowHeights,
-              templateInfo.defaultRowHeight
-            )
-          : 0;
-        const prevSectionSpan = prevSectionSpanBySheetPath.get(block.sheetPath);
-        if (templateInfo && prevSectionSpan) {
-          const sectionOverflowed = doesSectionOverflowPages({
-            sectionStartRow: prevSectionSpan.startRow,
-            sectionEndRow: prevSectionSpan.endRow,
-            pageStartRow: templateInfo.firstRange.startRow,
-            basePageHeight: templateInfo.basePageHeight,
-            rowHeights: currentRowHeights,
-            defaultRowHeight: templateInfo.defaultRowHeight,
-          });
-
-          if (sectionOverflowed) {
-            const blankRows = calculateBlankRowsToNextPageStart({
-              nextSectionStartRow: currentStartRow,
-              pageStartRow: templateInfo.firstRange.startRow,
-              basePageHeight: templateInfo.basePageHeight,
-              rowHeights: currentRowHeights,
-              defaultRowHeight: templateInfo.defaultRowHeight,
-            });
-
-            if (blankRows > 0) {
-              sheetXml = shiftRowsDown(sheetXml, currentStartRow, blankRows);
-              sheetXml = shiftMergeCellsDown(sheetXml, currentStartRow, blankRows);
-              sheetXml = shiftRowBreaksDown(sheetXml, currentStartRow, blankRows);
-              currentRowHeights = buildEffectiveRowHeightMap(
-                sheetXml,
-                currentSharedStrings,
-                styleCatalog,
-                templateInfo.layoutInfo
-              );
-              currentPageUsedHeight = 0;
-              currentStartRow += blankRows;
-              currentEndRow += blankRows;
-              totalInsertedRowsForPrintArea += blankRows;
-            }
-          }
-        }
+        const currentStartRow = block.startRow + currentOffset;
+        const currentEndRow = block.endRow + currentOffset;
 
         const repeatCount = Math.max(0, recordCount - 1);
         const insertedRows = repeatCount * block.blockHeight;
@@ -1900,57 +1763,14 @@ export class PlaceholderReplacer {
             block.blockHeight,
             repeatCount
           );
-          totalInsertedRowsForPrintArea += insertedRows;
-          currentRowHeights = templateInfo
-            ? buildEffectiveRowHeightMap(sheetXml, currentSharedStrings, styleCatalog, templateInfo.layoutInfo)
-            : buildRowHeightMap(sheetXml);
         }
 
         const totalBlocks = Math.max(recordCount, 1);
         let currentRecordStartRow = currentStartRow;
-        let pageBreakInsertedRowsInBlock = 0;
+        const blockUnits = unitsBySheetPath.get(block.sheetPath) || [];
 
         for (let blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
           const recordImageTokens = new Map<string, string>();
-          if (blockIndex > 0 && templateInfo) {
-            const itemForEstimate = blockIndex < recordCount ? tableData[blockIndex] : {};
-            const estimatedRecordHeight = estimateRecordBlockHeight({
-              sheetXml,
-              startRow: currentRecordStartRow,
-              blockHeight: block.blockHeight,
-              item: itemForEstimate,
-              placeholders: block.placeholders,
-              placeholderToIndices,
-              sharedStrings: currentSharedStrings,
-              styleCatalog,
-              layoutInfo: templateInfo.layoutInfo,
-            });
-            const currentRecordWouldOverflow =
-              currentPageUsedHeight > 0 &&
-              currentPageUsedHeight + estimatedRecordHeight > templateInfo.basePageHeight + 0.000001;
-
-            if (currentRecordWouldOverflow) {
-              const remainingHeight = templateInfo.basePageHeight - currentPageUsedHeight;
-              const blankRows = Math.max(1, Math.ceil(remainingHeight / templateInfo.defaultRowHeight));
-
-              if (blankRows > 0) {
-                sheetXml = shiftRowsDown(sheetXml, currentRecordStartRow, blankRows);
-                sheetXml = shiftMergeCellsDown(sheetXml, currentRecordStartRow, blankRows);
-                sheetXml = shiftRowBreaksDown(sheetXml, currentRecordStartRow, blankRows);
-                currentRowHeights = buildEffectiveRowHeightMap(
-                  sheetXml,
-                  currentSharedStrings,
-                  styleCatalog,
-                  templateInfo.layoutInfo
-                );
-                currentPageUsedHeight = 0;
-                currentRecordStartRow += blankRows;
-                totalInsertedRowsForPrintArea += blankRows;
-                pageBreakInsertedRowsInBlock += blankRows;
-              }
-            }
-          }
-
           const item = blockIndex < recordCount ? tableData[blockIndex] : {};
 
           for (let offset = 0; offset < block.blockHeight; offset++) {
@@ -1974,48 +1794,25 @@ export class PlaceholderReplacer {
             sheetXml = sheetXml.replace(originalRowXml, rendered.rowXml);
           }
 
-          if (templateInfo) {
-            currentSharedStrings = extractSharedStrings(sharedStringsXml);
-            currentRowHeights = buildEffectiveRowHeightMap(
-              sheetXml,
-              currentSharedStrings,
-              styleCatalog,
-              templateInfo.layoutInfo
-            );
-            currentPageUsedHeight += sumRowHeights(
-              currentRecordStartRow,
-              currentRecordStartRow + block.blockHeight - 1,
-              currentRowHeights,
-              templateInfo.defaultRowHeight
-            );
-          }
-
+          blockUnits.push({
+            startRow: currentRecordStartRow,
+            endRow: currentRecordStartRow + block.blockHeight - 1,
+          });
           currentRecordStartRow += block.blockHeight;
         }
 
-        const finalEndRow = currentEndRow + insertedRows + pageBreakInsertedRowsInBlock;
-        const newOffset = currentOffset + totalInsertedRowsForPrintArea;
-        sheetOffsetByPath.set(block.sheetPath, newOffset);
-        prevSectionSpanBySheetPath.set(block.sheetPath, {
+        const finalEndRow = currentEndRow + insertedRows;
+        sheetOffsetByPath.set(block.sheetPath, currentOffset + insertedRows);
+        unitsBySheetPath.set(block.sheetPath, blockUnits);
+
+        const blockSections = sectionsBySheetPath.get(block.sheetPath) || [];
+        blockSections.push({
           startRow: currentStartRow,
           endRow: finalEndRow,
         });
-        if (templateInfo) {
-          pageUsedHeightBySheetPath.set(block.sheetPath, currentPageUsedHeight);
-        }
+        sectionsBySheetPath.set(block.sheetPath, blockSections);
 
         zip.file(block.sheetPath, sheetXml);
-
-        if (workbookXmlForPrintArea) {
-          workbookXmlForPrintArea = updatePrintAreaForSheet(
-            workbookXmlForPrintArea,
-            block.sheetName,
-            block.sheetIndex,
-            sheetXml,
-            extractSharedStrings(sharedStringsXml),
-            styleCatalog
-          );
-        }
       }
     }
 
@@ -2027,110 +1824,6 @@ export class PlaceholderReplacer {
       legacyInsertedRows = legacy.insertedRows;
     }
 
-    const imageKeys = new Set(Object.keys(sectionImageState.images));
-    if (imageKeys.size > 0) {
-      const workbookFile = zip.file('xl/workbook.xml');
-      const workbookRelsFile = zip.file('xl/_rels/workbook.xml.rels');
-
-      if (workbookFile && workbookRelsFile) {
-        if (!workbookXmlForPrintArea) {
-          workbookXmlForPrintArea = await workbookFile.async('string');
-        }
-
-        const workbookRelsXml = await workbookRelsFile.async('string');
-        const targetSheetEntries = sheetEntries.length > 0
-          ? sheetEntries
-          : parseWorkbookSheets(workbookXmlForPrintArea, workbookRelsXml).filter((s) => !!s.path);
-        const currentSharedStrings = extractSharedStrings(sharedStringsXml);
-
-        for (const sheetEntry of targetSheetEntries) {
-          const sheetFile = zip.file(sheetEntry.path);
-          if (!sheetFile) continue;
-
-          let sheetXml = await sheetFile.async('string');
-          const imageBlocks = findImagePlaceholderBlocks(sheetXml, currentSharedStrings, imageKeys);
-          if (imageBlocks.length === 0) continue;
-
-          const firstRange = getFirstPrintAreaForSheet(
-            workbookXmlForPrintArea,
-            sheetEntry.name,
-            sheetEntry.index
-          );
-          if (!firstRange) continue;
-
-          const layoutInfo = parsePageLayoutInfo(sheetXml, firstRange);
-          if (layoutInfo.pageHeightCapacityPoints <= 0) continue;
-
-          let rowHeights = buildEffectiveRowHeightMap(sheetXml, currentSharedStrings, styleCatalog, layoutInfo);
-          let printAreaRanges = getPrintAreaRangesForSheet(
-            workbookXmlForPrintArea,
-            sheetEntry.name,
-            sheetEntry.index
-          );
-          let insertedRows = 0;
-
-          for (const block of imageBlocks) {
-            const startRow = block.startRow + insertedRows;
-            const endRow = block.endRow + insertedRows;
-
-            const crossingRange = printAreaRanges.find((range) =>
-              startRow >= range.startRow &&
-              startRow <= range.endRow &&
-              endRow > range.endRow
-            );
-
-            let blankRows = 0;
-            if (crossingRange) {
-              blankRows = crossingRange.endRow + 1 - startRow;
-            } else {
-              const imageOverflowed = doesSectionOverflowPages({
-                sectionStartRow: startRow,
-                sectionEndRow: endRow,
-                pageStartRow: firstRange.startRow,
-                basePageHeight: layoutInfo.pageHeightCapacityPoints,
-                rowHeights,
-                defaultRowHeight: layoutInfo.defaultRowHeight,
-              });
-
-              if (imageOverflowed) {
-                blankRows = calculateBlankRowsToNextPageStart({
-                  nextSectionStartRow: startRow,
-                  pageStartRow: firstRange.startRow,
-                  basePageHeight: layoutInfo.pageHeightCapacityPoints,
-                  rowHeights,
-                  defaultRowHeight: layoutInfo.defaultRowHeight,
-                });
-              }
-            }
-
-            if (blankRows <= 0) continue;
-
-            sheetXml = shiftRowsDown(sheetXml, startRow, blankRows);
-            sheetXml = shiftMergeCellsDown(sheetXml, startRow, blankRows);
-            sheetXml = shiftRowBreaksDown(sheetXml, startRow, blankRows);
-            insertedRows += blankRows;
-            rowHeights = buildEffectiveRowHeightMap(sheetXml, currentSharedStrings, styleCatalog, layoutInfo);
-            workbookXmlForPrintArea = updatePrintAreaForSheet(
-              workbookXmlForPrintArea,
-              sheetEntry.name,
-              sheetEntry.index,
-              sheetXml,
-              currentSharedStrings,
-              styleCatalog
-            );
-            printAreaRanges = getPrintAreaRangesForSheet(
-              workbookXmlForPrintArea,
-              sheetEntry.name,
-              sheetEntry.index
-            );
-          }
-
-          if (insertedRows > 0) {
-            zip.file(sheetEntry.path, sheetXml);
-          }
-        }
-      }
-    }
     // Stage B: 通常プレースホルダー（先頭run書式を維持して sharedStrings を置換）
     const primitiveReplacements = new Map<string, string>();
     Object.entries(data).forEach(([key, value]) => {
@@ -2143,8 +1836,75 @@ export class PlaceholderReplacer {
       primitiveReplacements
     );
 
+    // Stage C: ページ割り更新（単一Print_Area + 手動rowBreaks）
+    // 置換後の文字列で行高さを見積もるため、Stage Bの後に実行する
+    const paginationSharedStrings = extractSharedStrings(replacedSharedStrings);
+    const imageKeys = new Set(Object.keys(sectionImageState.images));
+
     if (workbookXmlForPrintArea) {
+      for (const sheetEntry of sheetEntries) {
+        if (!sheetOffsetByPath.has(sheetEntry.path)) continue;
+
+        const sheetFile = zip.file(sheetEntry.path);
+        if (!sheetFile) continue;
+
+        const sheetXml = await sheetFile.async('string');
+        const units = [...(unitsBySheetPath.get(sheetEntry.path) || [])];
+        if (imageKeys.size > 0) {
+          findImagePlaceholderBlocks(sheetXml, paginationSharedStrings, imageKeys).forEach((imageBlock) => {
+            units.push({ startRow: imageBlock.startRow, endRow: imageBlock.endRow });
+          });
+        }
+
+        const paginated = applyPaginationToSheet({
+          workbookXml: workbookXmlForPrintArea,
+          sheetXml,
+          targetSheetName: sheetEntry.name,
+          targetSheetIndex: sheetEntry.index,
+          insertedRows: sheetOffsetByPath.get(sheetEntry.path) || 0,
+          sharedStrings: paginationSharedStrings,
+          styleCatalog,
+          units,
+          sections: sectionsBySheetPath.get(sheetEntry.path) || [],
+        });
+
+        workbookXmlForPrintArea = paginated.workbookXml;
+        if (paginated.sheetXml !== sheetXml) {
+          zip.file(sheetEntry.path, paginated.sheetXml);
+        }
+      }
+
       zip.file('xl/workbook.xml', workbookXmlForPrintArea);
+    }
+
+    // 旧記法（sheet1想定の既存互換）のページ割り更新
+    if (legacyInsertedRows > 0 && !workbookXmlForPrintArea) {
+      const workbookFile = zip.file('xl/workbook.xml');
+      const sheet1File = zip.file('xl/worksheets/sheet1.xml');
+
+      if (workbookFile && sheet1File) {
+        const workbookXml = await workbookFile.async('string');
+        const sheet1Xml = await sheet1File.async('string');
+        const firstSheetNameMatch = workbookXml.match(/<sheet\b[^>]*name="([^"]*)"/);
+        const firstSheetName = firstSheetNameMatch ? decodeXml(firstSheetNameMatch[1]) : '';
+
+        const paginated = applyPaginationToSheet({
+          workbookXml,
+          sheetXml: sheet1Xml,
+          targetSheetName: firstSheetName,
+          targetSheetIndex: 0,
+          insertedRows: legacyInsertedRows,
+          sharedStrings: paginationSharedStrings,
+          styleCatalog,
+          units: [],
+          sections: [],
+        });
+
+        zip.file('xl/workbook.xml', paginated.workbookXml);
+        if (paginated.sheetXml !== sheet1Xml) {
+          zip.file('xl/worksheets/sheet1.xml', paginated.sheetXml);
+        }
+      }
     }
 
     replacedSharedStrings = await embedImagePlaceholders({
@@ -2152,37 +1912,6 @@ export class PlaceholderReplacer {
       sharedStringsXml: replacedSharedStrings,
       images: sectionImageState.images,
     });
-    // Stage C: 旧記法でのPrint_Area更新（sheet1想定の既存互換）
-    if (legacyInsertedRows > 0 && !workbookXmlForPrintArea) {
-      const workbookFile = zip.file('xl/workbook.xml');
-      if (workbookFile) {
-        const workbookXml = await workbookFile.async('string');
-        const currentPrintArea = getPrintAreaFromWorkbookXml(workbookXml);
-        const parsed = currentPrintArea ? parseFirstPrintArea(currentPrintArea) : null;
-
-        if (parsed) {
-          const sheet1File = zip.file('xl/worksheets/sheet1.xml');
-          const sheet1Xml = sheet1File ? await sheet1File.async('string') : null;
-          if (sheet1Xml) {
-            const firstSheetNameMatch = workbookXml.match(/<sheet\b[^>]*name="([^"]*)"/);
-            const firstSheetName = firstSheetNameMatch ? decodeXml(firstSheetNameMatch[1]) : '';
-            const updatedWorkbookXml = updatePrintAreaForSheet(
-              workbookXml,
-              firstSheetName,
-              0,
-              sheet1Xml,
-              extractSharedStrings(sharedStringsXml),
-              styleCatalog
-            );
-            zip.file('xl/workbook.xml', updatedWorkbookXml);
-          }
-        }
-      }
-    }
-
-    if (workbookXmlForPrintArea) {
-      zip.file('xl/workbook.xml', workbookXmlForPrintArea);
-    }
 
     zip.file('xl/sharedStrings.xml', replacedSharedStrings);
 

@@ -196,6 +196,40 @@ function parseWorkbookSheets(workbookXml: string, workbookRelsXml: string): Work
   });
 }
 
+function parseManualRowBreakIds(sheetXml: string): number[] {
+  const block = sheetXml.match(/<rowBreaks\b[^>]*>([\s\S]*?)<\/rowBreaks>/);
+  if (!block) return [];
+
+  const ids: number[] = [];
+  for (const match of block[1].matchAll(/<(?:brk|rowBreak)\b[^>]*\bid="(\d+)"[^>]*\/>/g)) {
+    ids.push(Number(match[1]));
+  }
+  return ids;
+}
+
+/**
+ * 印刷範囲を手動改ページ（rowBreaks）の位置で分割し、ページ単位の行範囲に展開する。
+ * brk id=N は「N行目の直後で改ページ」を意味する。
+ */
+function splitRangesByRowBreaks(ranges: PrintAreaRange[], breakIds: number[]): PrintAreaRange[] {
+  if (breakIds.length === 0) return ranges;
+
+  const sortedBreaks = Array.from(new Set(breakIds)).sort((a, b) => a - b);
+  const result: PrintAreaRange[] = [];
+
+  for (const range of ranges) {
+    let currentStart = range.startRow;
+    for (const breakId of sortedBreaks) {
+      if (breakId < currentStart || breakId >= range.endRow) continue;
+      result.push({ ...range, startRow: currentStart, endRow: breakId });
+      currentStart = breakId + 1;
+    }
+    result.push({ ...range, startRow: currentStart, endRow: range.endRow });
+  }
+
+  return result;
+}
+
 async function getPrintAreaRangesBySheetPath(zip: JSZip): Promise<Map<string, PrintAreaRange[]>> {
   const workbookFile = zip.file('xl/workbook.xml');
   const workbookRelsFile = zip.file('xl/_rels/workbook.xml.rels');
@@ -229,7 +263,14 @@ async function getPrintAreaRangesBySheetPath(zip: JSZip): Promise<Map<string, Pr
         sheetNameFromValue === sheetEntry.name;
 
       if (!isTarget) continue;
-      result.set(sheetEntry.path, parsePrintAreaRanges(value));
+
+      const sheetFile = zip.file(sheetEntry.path);
+      const sheetXml = sheetFile ? await sheetFile.async('string') : '';
+      const pageRanges = splitRangesByRowBreaks(
+        parsePrintAreaRanges(value),
+        sheetXml ? parseManualRowBreakIds(sheetXml) : []
+      );
+      result.set(sheetEntry.path, pageRanges);
       break;
     }
   }

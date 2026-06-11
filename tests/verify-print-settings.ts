@@ -1,8 +1,8 @@
 import ExcelJS from 'exceljs';
 import { Buffer } from 'buffer';
 import * as process from 'process';
-import { ExcelGenerator } from './lib/excelGenerator';
-import { PlaceholderData } from './lib/placeholderReplacer';
+import { ExcelGenerator } from '../src/lib/excelGenerator';
+import { PlaceholderData } from '../src/lib/placeholderReplacer';
 
 async function verifyPrintSettings() {
   console.log('Starting verification...');
