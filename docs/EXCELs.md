@@ -164,6 +164,108 @@ Current behavior:
 
 As a result, templates with long text, inserted images, or renderer-specific layout behavior may still produce page breaks that differ slightly from the final printed/PDF layout.
 
+### 5.2 Print layout options
+
+The print layout options must be applied to the generated XLSX before PDF
+conversion. PDF generation must not own a separate margin, paper, or scaling
+model. The implemented pipeline is:
+
+1. Read the template XLSX.
+2. Apply requested `printLayout` settings to worksheet XML.
+3. Replace placeholders and expand section tables.
+4. Recalculate `Print_Area` and `rowBreaks` from the updated worksheet print
+   settings.
+5. Return the XLSX as-is for Excel output, or convert that same XLSX to PDF.
+
+This keeps "print from Excel" and "generate PDF" on the same source of truth.
+Changing margins only at PDF conversion time is not acceptable because section
+pagination has already been calculated against the XLSX print settings.
+
+Request shape:
+
+```json
+{
+  "options": {
+    "printLayout": {
+      "paperSize": "A4",
+      "orientation": "portrait",
+      "marginPreset": "narrow",
+      "margins": {
+        "top": 0,
+        "bottom": 0
+      },
+      "fit": {
+        "width": 1,
+        "height": 0
+      },
+      "recalculatePagination": true
+    }
+  }
+}
+```
+
+Margin behavior:
+
+- If `printLayout` is omitted, preserve the template settings.
+- `marginPreset` selects a complete preset such as `normal`, `narrow`, or
+  `wide`.
+- `margins` is a partial override object using inch values. Supported keys are
+  `left`, `right`, `top`, `bottom`, `header`, and `footer`.
+- If both `marginPreset` and `margins` are provided, resolve the preset first
+  and then override only the provided margin keys. This supports requests such
+  as "narrow, but top/bottom/header/footer are zero".
+- `margins: {}` is invalid. At least one field must be supplied.
+- Negative values are invalid. Unsupported keys are invalid.
+
+Pagination behavior:
+
+- `recalculatePagination` may be omitted.
+- `recalculatePagination: true` is accepted and documents the default behavior.
+- `recalculatePagination: false` is rejected. Applying print layout without
+  recalculating `Print_Area` and `rowBreaks` can create an inconsistent XLSX/PDF
+  layout, so disabling recalculation is not supported.
+
+Suggested presets:
+
+```text
+normal: left=0.7,  right=0.7,  top=0.75, bottom=0.75, header=0.3, footer=0.3
+narrow: left=0.25, right=0.25, top=0.75, bottom=0.75, header=0.3, footer=0.3
+wide:   left=1.0,  right=1.0,  top=1.0,  bottom=1.0,  header=0.5, footer=0.5
+```
+
+OOXML fields to update:
+
+```xml
+<!-- xl/worksheets/sheetN.xml -->
+<pageMargins left="0.25" right="0.25" top="0" bottom="0" header="0" footer="0"/>
+<pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>
+
+<!-- xl/workbook.xml -->
+<definedName name="_xlnm.Print_Area" localSheetId="0">'Sheet1'!$A$1:$D$80</definedName>
+```
+
+Section pagination must use the updated worksheet XML. The page height
+calculation remains:
+
+```text
+printableHeightPoints = pageHeightPoints - topMarginInch * 72 - bottomMarginInch * 72
+pageCapacityPoints = printableHeightPoints / effectiveScale
+```
+
+Header and footer margins are inside the top/bottom margins in OOXML, so they
+do not reduce the body height again. They still must be written to the XML so
+Excel, LibreOffice, and PDF conversion see the same worksheet settings.
+
+Width behavior is a separate decision from margins:
+
+- `fit.width=1, fit.height=0` lets Excel/LibreOffice scale the print area to
+  the printable page width.
+- Column widths are not automatically expanded by margin changes.
+- If a future feature needs the table itself to fill the wider printable area,
+  add an explicit strategy such as
+  `widthStrategy: "expandColumnsToPrintableWidth"`. Do not hide that behavior
+  inside margin presets.
+
 ## 6. Where `wrapText` is stored
 
 Wrapping behavior is mainly determined by this combination:

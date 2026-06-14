@@ -1,4 +1,4 @@
-import { PlaceholderReplacer, PlaceholderData } from './placeholderReplacer';
+import { PlaceholderReplacer, PlaceholderData, PrintLayoutOptions } from './placeholderReplacer';
 import { selectSingleSheetFromWorkbookBuffer } from './sheetSelector';
 
 export interface ExcelGenerationOptions {
@@ -7,6 +7,7 @@ export interface ExcelGenerationOptions {
    */
   sheetName?: string;
   sheetId?: number;
+  printLayout?: PrintLayoutOptions;
 }
 
 export interface SheetSummary {
@@ -37,7 +38,8 @@ export class ExcelGenerator {
     // プレースホルダーを置換（印刷設定は完全保持される）
     const resultBuffer = await this.placeholderReplacer.replacePlaceholders(
       templateBuffer,
-      data
+      data,
+      { printLayout: options.printLayout }
     );
 
     // 特定のシートのみを残す場合（XLSX XMLを直接編集して印刷設定を保持）

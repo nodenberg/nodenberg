@@ -1,6 +1,6 @@
-import { PlaceholderReplacer, PlaceholderData } from './placeholderReplacer';
+import { PlaceholderData, PrintLayoutOptions } from './placeholderReplacer';
 import { SofficeConverter, SofficeConversionOptions } from './sofficeConverter';
-import { selectSingleSheetFromWorkbookBuffer } from './sheetSelector';
+import { ExcelGenerator } from './excelGenerator';
 
 export interface PDFGenerationOptions {
   /**
@@ -28,14 +28,19 @@ export interface PDFGenerationOptions {
    * sheetName と同時に指定された場合は sheetId を優先します。
    */
   sheetId?: number;
+
+  /**
+   * Excel/PDF共通の印刷レイアウト設定
+   */
+  printLayout?: PrintLayoutOptions;
 }
 
 export class PDFGenerator {
-  private placeholderReplacer: PlaceholderReplacer;
+  private excelGenerator: ExcelGenerator;
   private sofficeConverter: SofficeConverter;
 
   constructor(sofficeOptions?: SofficeConversionOptions) {
-    this.placeholderReplacer = new PlaceholderReplacer();
+    this.excelGenerator = new ExcelGenerator();
     this.sofficeConverter = new SofficeConverter(sofficeOptions);
   }
 
@@ -53,30 +58,11 @@ export class PDFGenerator {
       this.sofficeConverter.setSofficeCommand(options.sofficeCommand);
     }
 
-    // Base64をBufferに変換
-    const templateBuffer = Buffer.from(templateBase64, 'base64');
-
-    // プレースホルダーを置換（test9方式 - 印刷設定完全保持）
-    const excelBuffer = await this.placeholderReplacer.replacePlaceholders(
-      templateBuffer,
-      data
-    );
-
-    // 特定のシートのみを処理する場合
-    // XLSX XMLを直接編集して、印刷設定を保持したままシートを選択する
-    if (options.sheetName || options.sheetId !== undefined) {
-      const filteredBuffer = await selectSingleSheetFromWorkbookBuffer(
-        excelBuffer,
-        { sheetName: options.sheetName, sheetId: options.sheetId }
-      );
-
-      // sofficeでPDFに変換
-      const pdfBuffer = await this.sofficeConverter.convertExcelToPDF(
-        filteredBuffer
-      );
-
-      return pdfBuffer;
-    }
+    const excelBuffer = await this.excelGenerator.generateExcel(templateBase64, data, {
+      sheetName: options.sheetName,
+      sheetId: options.sheetId,
+      printLayout: options.printLayout,
+    });
 
     // sofficeでPDFに変換
     const pdfBuffer = await this.sofficeConverter.convertExcelToPDF(excelBuffer);
