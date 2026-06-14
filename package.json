@@ -24,7 +24,7 @@
     "start": "node scripts/init-libreoffice.js && node dist/server.js",
     "start:no-init": "node dist/server.js",
     "test": "npm run build && npm run test:verify",
-    "test:verify": "tsx tests/verify-print-settings.ts && tsx tests/verify-section-table.ts && tsx tests/verify-image-placeholder.ts && tsx tests/verify-paging-e2e.ts",
+    "test:verify": "tsx tests/verify-print-settings.ts && tsx tests/verify-section-table.ts && tsx tests/verify-image-placeholder.ts && tsx tests/verify-paging-e2e.ts && tsx tests/verify-print-layout.ts",
     "clean": "rm -rf dist",
     "init-libreoffice": "node scripts/init-libreoffice.js"
   },

@@ -50,6 +50,7 @@ build.log
 !/tests/verify-section-table.ts
 !/tests/verify-image-placeholder.ts
 !/tests/verify-paging-e2e.ts
+!/tests/verify-print-layout.ts
 /tests/outputs/
 
 dist/

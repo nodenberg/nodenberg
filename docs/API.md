@@ -760,6 +760,68 @@ For section image cells:
 - If an image would cross a print-page boundary, its drawing anchor is moved to the next page
 - This prevents a single image from being split between page 1 and page 2 in the exported PDF
 
+### Print Layout Options
+
+Print layout must be shared by Excel and PDF generation. PDF endpoints should
+not accept independent margin or paper settings. Both Excel and PDF generation
+accept the same `options.printLayout` object, apply it to the XLSX before
+section expansion and pagination, and then convert that same XLSX to PDF when
+needed.
+
+Request shape:
+
+```json
+{
+  "templateBase64": "...",
+  "data": {},
+  "options": {
+    "printLayout": {
+      "marginPreset": "narrow",
+      "margins": {
+        "top": 0,
+        "bottom": 0,
+        "header": 0,
+        "footer": 0
+      },
+      "fit": {
+        "width": 1,
+        "height": 0
+      },
+      "recalculatePagination": true
+    }
+  }
+}
+```
+
+Endpoint behavior:
+
+- `POST /generate/excel` returns the XLSX after `printLayout`, placeholder
+  replacement, section expansion, `Print_Area`, and `rowBreaks` are applied.
+- `POST /generate/excel/by-display-order` accepts the same `printLayout` object
+  while selecting the output sheet by display order.
+- `POST /generate/pdf` runs the same XLSX generation path and converts the
+  resulting XLSX to PDF. Layout-related PDF-only options are intentionally not
+  supported.
+- `POST /generate/pdf/by-display-order` also runs the same XLSX generation path
+  while selecting the output sheet by display order.
+- A future `POST /generate/bundle` endpoint may return both XLSX and PDF from
+  one generated XLSX so callers can verify both outputs came from the same
+  layout.
+
+Validation rules:
+
+- Omitted `printLayout` preserves the template print settings.
+- `marginPreset` supports `normal`, `narrow`, and `wide`.
+- `margins` is a partial inch-based override with keys `left`, `right`, `top`,
+  `bottom`, `header`, and `footer`.
+- When both `marginPreset` and `margins` are supplied, apply the preset first
+  and then override the supplied fields.
+- `margins: {}` and unsupported keys return 400.
+- `recalculatePagination` may be omitted or set to `true`.
+- `recalculatePagination: false` returns 400. Disabling recalculation is not
+  supported because print layout changes require `Print_Area` and `rowBreaks`
+  to be rebuilt from the updated worksheet settings.
+
 ---
 
 ## Testing
