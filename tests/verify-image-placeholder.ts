@@ -1,12 +1,12 @@
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import * as fs from 'fs';
-import * as path from 'path';
 import { PlaceholderReplacer } from '../src/lib/placeholderReplacer';
 import { ExcelGenerator } from '../src/lib/excelGenerator';
 
 const SAMPLE_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
+const SAMPLE_JPEG_BASE64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/Aaf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/Aaf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/Aqf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IV//2gAMAwEAAgADAAAAEP/EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8QH//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8QH//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAT8QH//Z';
 
 async function verifySingleSectionImagePlaceholder() {
   const workbook = new ExcelJS.Workbook();
@@ -80,12 +80,6 @@ async function verifySingleSectionImagePlaceholder() {
 }
 
 async function verifySectionImagePlaceholderAcrossRecords() {
-  const projectRoot = path.resolve(process.cwd(), '..');
-  const youtubePath = path.join(projectRoot, '06_test-assets', 'youtube.png');
-  const characterPath = path.join(projectRoot, '06_test-assets', 'charactor.jpg');
-  const youtubeBase64 = fs.readFileSync(youtubePath).toString('base64');
-  const characterBase64 = fs.readFileSync(characterPath).toString('base64');
-
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Image Sheet');
 
@@ -111,14 +105,14 @@ async function verifySectionImagePlaceholderAcrossRecords() {
       明細: [
         {
           image: {
-            base64: youtubeBase64,
+            base64: SAMPLE_PNG_BASE64,
             contentType: 'image/png',
             name: 'youtube',
           },
         },
         {
           image: {
-            base64: characterBase64,
+            base64: SAMPLE_JPEG_BASE64,
             contentType: 'image/jpeg',
             name: 'charactor',
           },
@@ -159,7 +153,7 @@ async function verifySectionImagePlaceholderAcrossRecords() {
     mediaFiles.map(async (filename) => (await zip.file(filename)?.async('nodebuffer'))?.toString('base64') || '')
   );
   const payloadSet = new Set(embeddedPayloads);
-  if (!payloadSet.has(youtubeBase64) || !payloadSet.has(characterBase64)) {
+  if (!payloadSet.has(SAMPLE_PNG_BASE64) || !payloadSet.has(SAMPLE_JPEG_BASE64)) {
     throw new Error('embedded image content does not match section row input');
   }
 
