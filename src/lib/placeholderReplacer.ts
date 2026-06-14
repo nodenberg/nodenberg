@@ -19,6 +19,23 @@ export interface PlaceholderReplaceOptions {
    * Deprecated: top-level image map is no longer supported.
    */
   images?: PlaceholderImages;
+  printLayout?: PrintLayoutOptions;
+}
+export type PrintMarginName = 'left' | 'right' | 'top' | 'bottom' | 'header' | 'footer';
+export type PrintMarginPreset = 'normal' | 'narrow' | 'wide';
+export type PrintOrientation = 'portrait' | 'landscape';
+export type PrintPaperSize = 'A4' | 'A3' | 'Letter' | 'Legal';
+
+export interface PrintLayoutOptions {
+  marginPreset?: PrintMarginPreset;
+  margins?: Partial<Record<PrintMarginName, number>>;
+  fit?: {
+    width?: number;
+    height?: number;
+  };
+  paperSize?: PrintPaperSize;
+  orientation?: PrintOrientation;
+  recalculatePagination?: boolean;
 }
 type LegacyArrayPlaceholder = {
   placeholderKey: string;
@@ -89,6 +106,287 @@ function decodeXml(text: string): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
+}
+
+const PRINT_MARGIN_NAMES: PrintMarginName[] = ['left', 'right', 'top', 'bottom', 'header', 'footer'];
+const PRINT_MARGIN_PRESETS: Record<PrintMarginPreset, Record<PrintMarginName, number>> = {
+  normal: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+  narrow: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+  wide: { left: 1, right: 1, top: 1, bottom: 1, header: 0.5, footer: 0.5 },
+};
+const PRINT_PAPER_SIZE_CODES: Record<PrintPaperSize, number> = {
+  Letter: 1,
+  Legal: 5,
+  A3: 8,
+  A4: 9,
+};
+
+function parseXmlAttributes(attrs: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const attrRegex = /([A-Za-z_:][\w:.-]*)="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrRegex.exec(attrs)) !== null) {
+    result[match[1]] = match[2];
+  }
+  return result;
+}
+
+function buildSelfClosingTag(name: string, attrs: Record<string, string>): string {
+  const body = Object.entries(attrs)
+    .map(([key, value]) => ` ${key}="${escapeXml(value)}"`)
+    .join('');
+  return `<${name}${body}/>`;
+}
+
+export function validatePrintLayoutOptions(printLayout: unknown): asserts printLayout is PrintLayoutOptions {
+  if (!isPlainObject(printLayout)) {
+    throw new Error('Invalid options.printLayout (must be an object)');
+  }
+
+  const allowedPrintLayoutKeys = new Set([
+    'marginPreset',
+    'margins',
+    'fit',
+    'paperSize',
+    'orientation',
+    'recalculatePagination',
+  ]);
+  const unsupportedPrintLayoutKeys = Object.keys(printLayout).filter((key) => !allowedPrintLayoutKeys.has(key));
+  if (unsupportedPrintLayoutKeys.length > 0) {
+    throw new Error(`Unsupported options.printLayout keys: ${unsupportedPrintLayoutKeys.join(', ')}`);
+  }
+
+  const layout = printLayout as PrintLayoutOptions;
+  const marginPreset = layout.marginPreset;
+  if (
+    marginPreset !== undefined &&
+    (typeof marginPreset !== 'string' || !(marginPreset in PRINT_MARGIN_PRESETS))
+  ) {
+    throw new Error('Invalid options.printLayout.marginPreset (must be normal, narrow, or wide)');
+  }
+
+  if (layout.margins !== undefined) {
+    if (!isPlainObject(layout.margins)) {
+      throw new Error('Invalid options.printLayout.margins (must be an object)');
+    }
+    const keys = Object.keys(layout.margins);
+    if (keys.length === 0) {
+      throw new Error('Invalid options.printLayout.margins (must specify at least one margin)');
+    }
+    const allowed = new Set<string>(PRINT_MARGIN_NAMES);
+    const unsupported = keys.filter((key) => !allowed.has(key));
+    if (unsupported.length > 0) {
+      throw new Error(`Unsupported options.printLayout.margins keys: ${unsupported.join(', ')}`);
+    }
+    for (const key of PRINT_MARGIN_NAMES) {
+      const value = layout.margins[key];
+      if (value === undefined) continue;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        throw new Error(`Invalid options.printLayout.margins.${key} (must be a non-negative number)`);
+      }
+    }
+  }
+
+  if (layout.fit !== undefined) {
+    if (!isPlainObject(layout.fit)) {
+      throw new Error('Invalid options.printLayout.fit (must be an object)');
+    }
+    const allowedFitKeys = new Set(['width', 'height']);
+    const unsupported = Object.keys(layout.fit).filter((key) => !allowedFitKeys.has(key));
+    if (unsupported.length > 0) {
+      throw new Error(`Unsupported options.printLayout.fit keys: ${unsupported.join(', ')}`);
+    }
+    for (const key of ['width', 'height'] as const) {
+      const value = layout.fit[key];
+      if (value === undefined) continue;
+      if (!Number.isInteger(value) || value < 0) {
+        throw new Error(`Invalid options.printLayout.fit.${key} (must be a non-negative integer)`);
+      }
+    }
+  }
+
+  if (
+    layout.paperSize !== undefined &&
+    (typeof layout.paperSize !== 'string' || !(layout.paperSize in PRINT_PAPER_SIZE_CODES))
+  ) {
+    throw new Error('Invalid options.printLayout.paperSize (must be A4, A3, Letter, or Legal)');
+  }
+
+  if (
+    layout.orientation !== undefined &&
+    layout.orientation !== 'portrait' &&
+    layout.orientation !== 'landscape'
+  ) {
+    throw new Error('Invalid options.printLayout.orientation (must be portrait or landscape)');
+  }
+
+  if (
+    layout.recalculatePagination !== undefined &&
+    layout.recalculatePagination !== true
+  ) {
+    throw new Error('Invalid options.printLayout.recalculatePagination (only true is supported)');
+  }
+}
+
+function resolveMargins(printLayout: PrintLayoutOptions): Record<PrintMarginName, number> | null {
+  if (printLayout.marginPreset === undefined && printLayout.margins === undefined) return null;
+
+  const base = {
+    ...PRINT_MARGIN_PRESETS[printLayout.marginPreset || 'normal'],
+  };
+  if (printLayout.margins) {
+    for (const key of PRINT_MARGIN_NAMES) {
+      const value = printLayout.margins[key];
+      if (value !== undefined) base[key] = value;
+    }
+  }
+  return base;
+}
+
+function upsertPageMargins(sheetXml: string, margins: Record<PrintMarginName, number>): string {
+  const attrs = PRINT_MARGIN_NAMES.reduce<Record<string, string>>((acc, key) => {
+    acc[key] = String(margins[key]);
+    return acc;
+  }, {});
+  const element = buildSelfClosingTag('pageMargins', attrs);
+
+  if (/<pageMargins\b[^>]*\/>/.test(sheetXml)) {
+    return sheetXml.replace(/<pageMargins\b[^>]*\/>/, element);
+  }
+  if (/<pageSetup\b/.test(sheetXml)) {
+    return sheetXml.replace(/<pageSetup\b/, `${element}<pageSetup`);
+  }
+  if (/<headerFooter\b/.test(sheetXml)) {
+    return sheetXml.replace(/<headerFooter\b/, `${element}<headerFooter`);
+  }
+  if (/<rowBreaks\b/.test(sheetXml)) {
+    return sheetXml.replace(/<rowBreaks\b/, `${element}<rowBreaks`);
+  }
+  const insertBeforePatterns = [
+    /<colBreaks\b/,
+    /<customProperties\b/,
+    /<cellWatches\b/,
+    /<ignoredErrors\b/,
+    /<smartTags\b/,
+    /<drawing\b/,
+    /<legacyDrawing\b/,
+    /<legacyDrawingHF\b/,
+    /<picture\b/,
+    /<oleObjects\b/,
+    /<controls\b/,
+    /<webPublishItems\b/,
+    /<tableParts\b/,
+    /<extLst\b/,
+  ];
+  for (const pattern of insertBeforePatterns) {
+    if (pattern.test(sheetXml)) {
+      return sheetXml.replace(pattern, `${element}${sheetXml.match(pattern)?.[0] || ''}`);
+    }
+  }
+  return sheetXml.replace('</worksheet>', `${element}</worksheet>`);
+}
+
+function upsertFitToPage(sheetXml: string): string {
+  const pageSetUpPrElement = '<pageSetUpPr fitToPage="1"/>';
+
+  const sheetPrMatch = sheetXml.match(/<sheetPr\b([^>]*?)(?:\/>|>([\s\S]*?)<\/sheetPr>)/);
+  if (!sheetPrMatch) {
+    return sheetXml.replace(/<worksheet\b[^>]*>/, (tag) => `${tag}<sheetPr>${pageSetUpPrElement}</sheetPr>`);
+  }
+
+  const fullSheetPr = sheetPrMatch[0];
+  const attrs = sheetPrMatch[1] || '';
+  const body = sheetPrMatch[2];
+  if (body === undefined) {
+    return sheetXml.replace(fullSheetPr, `<sheetPr${attrs}>${pageSetUpPrElement}</sheetPr>`);
+  }
+
+  if (/<pageSetUpPr\b[^>]*\/>/.test(body)) {
+    const updatedBody = body.replace(/<pageSetUpPr\b([^>]*)\/>/, (_tag, setupAttrs: string) => {
+      const parsed = parseXmlAttributes(setupAttrs);
+      parsed.fitToPage = '1';
+      return buildSelfClosingTag('pageSetUpPr', parsed);
+    });
+    return sheetXml.replace(fullSheetPr, `<sheetPr${attrs}>${updatedBody}</sheetPr>`);
+  }
+
+  return sheetXml.replace(fullSheetPr, `<sheetPr${attrs}>${body}${pageSetUpPrElement}</sheetPr>`);
+}
+
+function upsertPageSetup(sheetXml: string, printLayout: PrintLayoutOptions): string {
+  const hasFitSetting = printLayout.fit?.width !== undefined || printLayout.fit?.height !== undefined;
+  const shouldUpdate =
+    printLayout.paperSize !== undefined ||
+    printLayout.orientation !== undefined ||
+    hasFitSetting;
+  if (!shouldUpdate) return sheetXml;
+
+  const existingMatch = sheetXml.match(/<pageSetup\b([^>]*)\/>/);
+  const attrs = existingMatch ? parseXmlAttributes(existingMatch[1]) : {};
+  if (printLayout.paperSize !== undefined) {
+    attrs.paperSize = String(PRINT_PAPER_SIZE_CODES[printLayout.paperSize]);
+  }
+  if (printLayout.orientation !== undefined) {
+    attrs.orientation = printLayout.orientation;
+  }
+  if (printLayout.fit?.width !== undefined) {
+    attrs.fitToWidth = String(printLayout.fit.width);
+  }
+  if (printLayout.fit?.height !== undefined) {
+    attrs.fitToHeight = String(printLayout.fit.height);
+  }
+
+  const element = buildSelfClosingTag('pageSetup', attrs);
+  if (existingMatch) {
+    return sheetXml.replace(/<pageSetup\b[^>]*\/>/, element);
+  }
+  if (/<headerFooter\b/.test(sheetXml)) {
+    return sheetXml.replace(/<headerFooter\b/, `${element}<headerFooter`);
+  }
+  if (/<rowBreaks\b/.test(sheetXml)) {
+    return sheetXml.replace(/<rowBreaks\b/, `${element}<rowBreaks`);
+  }
+  if (/<pageMargins\b[^>]*\/>/.test(sheetXml)) {
+    return sheetXml.replace(/<pageMargins\b[^>]*\/>/, (tag) => `${tag}${element}`);
+  }
+  const insertBeforePatterns = [
+    /<colBreaks\b/,
+    /<customProperties\b/,
+    /<cellWatches\b/,
+    /<ignoredErrors\b/,
+    /<smartTags\b/,
+    /<drawing\b/,
+    /<legacyDrawing\b/,
+    /<legacyDrawingHF\b/,
+    /<picture\b/,
+    /<oleObjects\b/,
+    /<controls\b/,
+    /<webPublishItems\b/,
+    /<tableParts\b/,
+    /<extLst\b/,
+  ];
+  for (const pattern of insertBeforePatterns) {
+    if (pattern.test(sheetXml)) {
+      return sheetXml.replace(pattern, `${element}${sheetXml.match(pattern)?.[0] || ''}`);
+    }
+  }
+  return sheetXml.replace('</worksheet>', `${element}</worksheet>`);
+}
+
+function applyPrintLayoutToSheetXml(sheetXml: string, printLayout?: PrintLayoutOptions): string {
+  if (!printLayout) return sheetXml;
+  validatePrintLayoutOptions(printLayout);
+
+  let updated = sheetXml;
+  const margins = resolveMargins(printLayout);
+  if (margins) {
+    updated = upsertPageMargins(updated, margins);
+  }
+  updated = upsertPageSetup(updated, printLayout);
+  if (printLayout.fit?.width !== undefined || printLayout.fit?.height !== undefined) {
+    updated = upsertFitToPage(updated);
+  }
+  return updated;
 }
 
 /**
@@ -1582,6 +1880,22 @@ export class PlaceholderReplacer {
 
     if (legacyArrayPlaceholders.length > 0 && sectionTablePlaceholders.length > 0) {
       throw new Error('テンプレート内で旧配列記法（{{#...}}）と新記法（{{##section.table.cell}}）は混在できません');
+    }
+
+    if (options.printLayout) {
+      validatePrintLayoutOptions(options.printLayout);
+      const worksheetPaths = Object.keys(zip.files).filter(
+        (filename) => filename.startsWith('xl/worksheets/sheet') && filename.endsWith('.xml')
+      );
+      for (const worksheetPath of worksheetPaths) {
+        const worksheetFile = zip.file(worksheetPath);
+        if (!worksheetFile) continue;
+        const sheetXml = await worksheetFile.async('string');
+        const updatedSheetXml = applyPrintLayoutToSheetXml(sheetXml, options.printLayout);
+        if (updatedSheetXml !== sheetXml) {
+          zip.file(worksheetPath, updatedSheetXml);
+        }
+      }
     }
 
     let workbookXmlForPrintArea: string | null = null;

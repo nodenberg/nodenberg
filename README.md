@@ -5,11 +5,13 @@ Node.js-based Excel report generation system with print settings preservation.
 - Standard placeholders are replaced by editing `xl/sharedStrings.xml` directly, which preserves template print settings.
 - Table expansion supports `{{#array.field}}` and `{{##section.table.cell}}`, including image objects inside section rows.
 - Section-table mode detects the target sheet automatically, duplicates multi-row record blocks, and recalculates `Print_Area` for Excel/PDF output.
+- `options.printLayout` applies the same print layout to generated Excel and PDF output.
 - If an image would cross a print-page boundary, it is moved to the next page as one block.
 
 ## Features
 
 - 🎯 **Print Settings Preservation** - keeps template print settings; for table expansion, updates target `sheetX.xml` + `workbook.xml` as needed
+- 🧾 **Shared Excel/PDF Print Layout** - optional `options.printLayout` updates XLSX print settings before pagination and PDF conversion
 - 🖼️ **Image Embedding** - supports image objects such as `{ base64, contentType }` in `section.table[]` rows, fitted inside the target cell/range with a 2px inner padding
 - ⚡ **Fast Processing** - Direct XML manipulation (~50-100ms per document)
 - 🔒 **Secure** - W3C-compliant XML escaping prevents injection attacks
@@ -78,6 +80,50 @@ npm run dev
 - **POST /template/validate** - Validate template metadata (optional JSON template generation)
 - **POST /generate/excel** - Generate Excel file (supports table expansion)
 - **POST /generate/pdf** - Generate PDF file (requires LibreOffice)
+
+### Print Layout Options
+
+`POST /generate/excel`, `POST /generate/excel/by-display-order`,
+`POST /generate/pdf`, and `POST /generate/pdf/by-display-order` accept the
+same `options.printLayout` object. PDF generation does not apply independent
+PDF-only margins; it generates the same print-layout-adjusted XLSX first, then
+converts that XLSX to PDF.
+
+Example:
+
+```json
+{
+  "templateBase64": "...",
+  "data": {},
+  "options": {
+    "printLayout": {
+      "marginPreset": "narrow",
+      "margins": {
+        "top": 0,
+        "bottom": 0,
+        "header": 0,
+        "footer": 0
+      },
+      "fit": {
+        "width": 1,
+        "height": 0
+      },
+      "paperSize": "A4",
+      "orientation": "portrait",
+      "recalculatePagination": true
+    }
+  }
+}
+```
+
+Supported margin presets are `normal`, `narrow`, and `wide`. `margins` is a
+partial inch-based override for `left`, `right`, `top`, `bottom`, `header`, and
+`footer`. `recalculatePagination` may be omitted or set to `true`; `false` is
+rejected because print layout changes require `Print_Area` and `rowBreaks` to
+be rebuilt from the updated worksheet settings.
+
+See [docs/API.md](docs/API.md) and [docs/EXCELs.md](docs/EXCELs.md) for the
+full XML-level behavior.
 
 See [docs/API.md](docs/API.md) for request/response examples.
 
@@ -171,6 +217,9 @@ This application generates Excel files by editing the XML inside `.xlsx` files d
      - Legacy `{{#...}}`: `sheet1.xml` and `workbook.xml` may be updated
      - Section-table `{{##section.table.cell}}`: target worksheet XML and `workbook.xml` may be updated
      - Section-table output recalculates page boundaries from print settings and record layout before rebuilding `Print_Area`
+   - When `options.printLayout` is specified, `pageMargins`, `pageSetup`, and
+     fit-to-page settings are applied to worksheet XML before pagination so
+     Excel and PDF output share the same layout source.
 4. **XML escaping**: All user input is automatically escaped using W3C-compliant XML escaping
 
 ### Section-table Placeholder Example

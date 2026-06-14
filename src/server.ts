@@ -4,6 +4,7 @@ import cors from 'cors';
 import { ExcelGenerator } from './lib/excelGenerator';
 import { PDFGenerator } from './lib/pdfGenerator';
 import { ExcelTemplateManager } from './lib/excelTemplateManager';
+import { PrintLayoutOptions, validatePrintLayoutOptions } from './lib/placeholderReplacer';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -62,7 +63,7 @@ const handleError = (res: Response, error: unknown, message: string) => {
 type SheetSelectBy = 'id' | 'name';
 const MAX_PDF_TIMEOUT_MS = 300000;
 
-function parsePdfRequestOptions(body: any): { timeout?: number } {
+function parsePrintLayoutRequestOptions(body: any): { printLayout?: PrintLayoutOptions } {
   const rawOptions = body?.options;
   if (rawOptions === undefined || rawOptions === null) return {};
 
@@ -70,13 +71,32 @@ function parsePdfRequestOptions(body: any): { timeout?: number } {
     throw new Error('Invalid options (must be an object)');
   }
 
-  const allowedKeys = new Set(['timeout']);
+  const allowedKeys = new Set(['printLayout']);
+  const unsupportedKeys = Object.keys(rawOptions).filter((key) => !allowedKeys.has(key));
+  if (unsupportedKeys.length > 0) {
+    throw new Error(`Unsupported options: ${unsupportedKeys.join(', ')}`);
+  }
+
+  if (rawOptions.printLayout === undefined) return {};
+  validatePrintLayoutOptions(rawOptions.printLayout);
+  return { printLayout: rawOptions.printLayout };
+}
+
+function parsePdfRequestOptions(body: any): { timeout?: number; printLayout?: PrintLayoutOptions } {
+  const rawOptions = body?.options;
+  if (rawOptions === undefined || rawOptions === null) return {};
+
+  if (typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
+    throw new Error('Invalid options (must be an object)');
+  }
+
+  const allowedKeys = new Set(['timeout', 'printLayout']);
   const unsupportedKeys = Object.keys(rawOptions).filter((key) => !allowedKeys.has(key));
   if (unsupportedKeys.length > 0) {
     throw new Error(`Unsupported PDF options: ${unsupportedKeys.join(', ')}`);
   }
 
-  const parsed: { timeout?: number } = {};
+  const parsed: { timeout?: number; printLayout?: PrintLayoutOptions } = {};
   if (rawOptions.timeout !== undefined) {
     const timeout =
       typeof rawOptions.timeout === 'number' ? rawOptions.timeout : Number(rawOptions.timeout);
@@ -84,6 +104,10 @@ function parsePdfRequestOptions(body: any): { timeout?: number } {
       throw new Error(`Invalid options.timeout (must be an integer between 1000 and ${MAX_PDF_TIMEOUT_MS})`);
     }
     parsed.timeout = timeout;
+  }
+  if (rawOptions.printLayout !== undefined) {
+    validatePrintLayoutOptions(rawOptions.printLayout);
+    parsed.printLayout = rawOptions.printLayout;
   }
 
   return parsed;
@@ -296,11 +320,24 @@ app.post('/generate/excel', async (req: Request, res: Response) => {
       return res.status(400).json({ error: legacyImagesError });
     }
 
+    let requestOptions: { printLayout?: PrintLayoutOptions };
+    try {
+      requestOptions = parsePrintLayoutRequestOptions(req.body);
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid options',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     const generator = new ExcelGenerator();
     let excelBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      excelBuffer = await generator.generateExcel(templateBase64, data, { ...(selector || {}) });
+      excelBuffer = await generator.generateExcel(templateBase64, data, {
+        ...(selector || {}),
+        ...requestOptions,
+      });
     } catch (e) {
       return res.status(400).json({
         error: 'Invalid sheet selector',
@@ -342,6 +379,16 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
       return res.status(400).json({ error: legacyImagesError });
     }
 
+    let requestOptions: { printLayout?: PrintLayoutOptions };
+    try {
+      requestOptions = parsePrintLayoutRequestOptions(req.body);
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid options',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     const generator = new ExcelGenerator();
     let excelBuffer: Buffer;
     try {
@@ -357,6 +404,7 @@ app.post('/generate/excel/by-display-order', async (req: Request, res: Response)
 
       excelBuffer = await generator.generateExcel(templateBase64, data, {
         sheetName: selectedSheet.name,
+        ...requestOptions,
       });
     } catch (e) {
       return res.status(400).json({
@@ -398,8 +446,17 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
       return res.status(400).json({ error: legacyImagesError });
     }
 
-    const pdfRequestOptions = parsePdfRequestOptions(req.body);
-    const generator = new PDFGenerator(pdfRequestOptions);
+    let pdfRequestOptions: { timeout?: number; printLayout?: PrintLayoutOptions };
+    try {
+      pdfRequestOptions = parsePdfRequestOptions(req.body);
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid options',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
+    const { printLayout, ...sofficeOptions } = pdfRequestOptions;
+    const generator = new PDFGenerator(sofficeOptions);
 
     // Check if LibreOffice is installed
     const isInstalled = await generator.checkLibreOfficeInstalled();
@@ -419,7 +476,7 @@ app.post('/generate/pdf', async (req: Request, res: Response) => {
     let pdfBuffer: Buffer;
     try {
       const selector = parseSheetSelector(req.body);
-      const pdfOptions = { ...pdfRequestOptions, ...(selector || {}) };
+      const pdfOptions = { ...sofficeOptions, ...(selector || {}), printLayout };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
@@ -462,8 +519,17 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
       return res.status(400).json({ error: legacyImagesError });
     }
 
-    const pdfRequestOptions = parsePdfRequestOptions(req.body);
-    const generator = new PDFGenerator(pdfRequestOptions);
+    let pdfRequestOptions: { timeout?: number; printLayout?: PrintLayoutOptions };
+    try {
+      pdfRequestOptions = parsePdfRequestOptions(req.body);
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Invalid options',
+        details: e instanceof Error ? e.message : String(e),
+      });
+    }
+    const { printLayout, ...sofficeOptions } = pdfRequestOptions;
+    const generator = new PDFGenerator(sofficeOptions);
 
     const isInstalled = await generator.checkLibreOfficeInstalled();
     if (!isInstalled) {
@@ -492,7 +558,7 @@ app.post('/generate/pdf/by-display-order', async (req: Request, res: Response) =
         });
       }
 
-      const pdfOptions = { ...pdfRequestOptions, sheetName: selectedSheet.name };
+      const pdfOptions = { ...sofficeOptions, sheetName: selectedSheet.name, printLayout };
       pdfBuffer = await generator.generatePDF(templateBase64, data, pdfOptions);
     } catch (e) {
       return res.status(400).json({
