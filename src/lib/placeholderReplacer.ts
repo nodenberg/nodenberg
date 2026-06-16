@@ -1111,14 +1111,14 @@ function buildPrintAreasByHeight(params: {
       currentEnd = currentStart;
     }
 
-    if (params.existingRows && params.existingRows.size > 0) {
-      while (currentEnd < params.contentEndRow && !params.existingRows.has(currentEnd + 1)) {
-        currentEnd += 1;
-      }
-    }
-
     ranges.push(`${params.sheetPrefix}!$${params.startCol}$${currentStart}:$${params.endCol}$${currentEnd}`);
     currentStart = currentEnd + 1;
+
+    if (params.existingRows && params.existingRows.size > 0) {
+      while (currentStart <= params.contentEndRow && !params.existingRows.has(currentStart)) {
+        currentStart += 1;
+      }
+    }
   }
 
   return ranges.join(',');
@@ -1301,7 +1301,8 @@ function updatePrintAreaForSheet(
       if (parsedRanges.length === 0) return full;
 
       const firstRange = parsedRanges[0];
-      const contentEndRow = Math.max(getMaxRowNumber(sheetXml), firstRange.endRow);
+      const maxRow = getMaxRowNumber(sheetXml);
+      const contentEndRow = maxRow >= firstRange.startRow ? maxRow : firstRange.endRow;
       const existingRows = buildExistingRowSet(sheetXml);
       const layoutInfo = parsePageLayoutInfo(sheetXml, firstRange);
       const rowHeights = buildEffectiveRowHeightMap(sheetXml, sharedStrings, styleCatalog, layoutInfo);
