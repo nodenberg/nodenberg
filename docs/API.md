@@ -759,6 +759,9 @@ For section image cells:
 - Images are scaled to fit within the target area with aspect ratio preserved and a 2px inner padding
 - If an image would cross a print-page boundary, its drawing anchor is moved to the next page
 - This prevents a single image from being split between page 1 and page 2 in the exported PDF
+- Legacy image placeholders such as `{{%image}}` are not supported. Use section
+  placeholders such as `{{##section.table.image}}` and put `{ base64,
+  contentType }` image objects in the matching section row.
 
 ### Print Layout Options
 
